@@ -1,0 +1,29 @@
+    /**
+    * @description gets the portal users for a given set of contacts. If a contact does not have a portal user they will not exist in the returned data, so be sure to check
+    *             before assuming that your contact will be in the returned data set.
+    * @param allContactIds a set of ids of all the contacts to fetch the related portal user records for.
+    * @return map<id,user> map of contact ids to their related portal user if one exists for them.
+    **/
+    public static map<id,user> getContactPortalUser(set<id> allContactIds)
+    {
+        system.debug('\n\n\n----------- Creating contact to portal user id map from contacts....');
+        system.debug(allContactIds);
+
+        map<id, user> contactToPortalUserMap = new map<id,user>();
+        try
+        {
+            list<User> portalUsers = [SELECT Id, MobilePhone, ContactId,Name,Email FROM User WHERE ContactId IN :allContactIds];
+
+            for(User portalUser : portalUsers)
+            {
+                contactToPortalUserMap.put(portalUser.ContactId,portalUser);
+            }
+        }
+        catch(exception e)
+        {
+            handleError(e);
+        }
+        system.debug('\n\n\n----------- Contact to porta user map constructed');
+        system.debug(contactToPortalUserMap);
+        return contactToPortalUserMap;
+    }

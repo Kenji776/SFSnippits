@@ -1,0 +1,30 @@
+    /**
+    * @description function for inserting a list of sObjects constructed from provided JSON. The list if cast to the proper sObject type by utilizing dynamic type casting.
+    * @param jsonData a json string that can be deserialized into a list of sObjects with the given type
+    * @param sObjectTypeName the API name of the type of sObjects being inserted
+    * @return void
+    **/
+    @future(callout=true)
+    public static void insertRecordsAsync(string jsonData, string sObjectTypeName)
+    {
+        try
+        {
+            //create a type from the given name so we can properly deserialize the list.
+            Type sObjectType = Type.forName('List<'+sObjectTypeName+'>'); //ex 'Account' or 'Contact'
+
+            //deserialize with the given type.
+            list<sobject> objectsToInsert = (List<SObject>) json.deserialize(jsonData, sObjectType);
+
+            system.debug('\n\n\n------- Inserting / Updating Objects');
+            system.debug(objectsToInsert);
+
+            upsert objectsToInsert;
+
+            system.debug('\n\n\n------- Objects inserted/Updated!');
+
+        }
+        catch(exception e)
+        {
+            handleError(e);
+        }
+    }

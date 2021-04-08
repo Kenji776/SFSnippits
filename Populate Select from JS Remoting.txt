@@ -1,0 +1,53 @@
+Script
+
+	function populatePicklist(selectId, objectApiName, fieldApiName) {
+	  Visualforce.remoting.Manager.invokeAction(
+			'{!$RemoteAction.StartupAcceleratorController.getPicklistValues}',
+			objectApiName,fieldApiName,
+			function(result, event){
+				if (event.status)
+				{
+					var listItems = '';
+					$.each(result,function(key, value)
+					{
+						 listItems += '<option value=' + key + '>' + value + '</option>';
+					});
+
+					$(selectId).append(listItems);
+
+				} else if (event.type === 'exception') {
+					console.log(result);
+				}
+			}, {escape: true}
+		);
+	}
+
+Invoke
+
+	populatePicklist('#id_whatModel', 'Opportunity', 'What_is_Your_Deployment_and_Use_Model__c');
+	populatePicklist('#id_whatStage', 'Opportunity', 'Products_Service_Stage_of_Development__c');
+	populatePicklist('#id_whatIndustry', 'Opportunity', 'What_Industry_is_Served_by_Your_Product__c');
+	populatePicklist('#id_howHear', 'Opportunity', 'How_Did_You_Hear_About_WFSA__c');
+	populatePicklist('#id_companyStructure', 'Opportunity', 'How_Have_You_Structured_Your_Company__c');
+	
+Controller
+
+    @RemoteAction
+    public static List<SelectOption> getPicklistValues(string objectApiName, string fieldApiName)
+    {
+        List<SelectOption> plValues = new List<SelectOption>();
+
+        Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+
+        Map<String, Schema.SObjectField> objectFields = globalDescribe.get(objectApiName).getDescribe().fields.getMap();
+
+        Schema.DescribeFieldResult picklistField = objectFields.get(fieldApiName).getDescribe();
+
+        for (Schema.PicklistEntry thisValue : picklistField.getPicklistValues()) {
+            plValues.add(new SelectOption(thisValue.getValue(), thisValue.getLabel(), !thisValue.isActive()));
+        }
+
+        plValues.sort();
+
+        return plValues;
+    }

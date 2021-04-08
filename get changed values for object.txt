@@ -1,0 +1,33 @@
+    /**
+    * @Date: Jul 20, 2017
+    * @description Finds all sObjects within the provided data that have had a given field change.
+    * @param newObjects map of id to account, trigger.nex context
+    * @param oldObjects map of id to account, trigger.old context
+    * @param fieldName name of the field to see if has changed between the given objects.
+    * @param includeNewRecordsAsUpdates are objects without an entry in the oldObjects map considered to be changed?
+    * @return map of objects that have had the given value modified between new and old data sets.
+    **/
+    public static map<id, sObject> getChangedValuesForObjects(map<id, sObject> newObjects, map<id, sObject> oldObjects, string fieldName, boolean includeNewRecordsAsUpdates) {
+        map<id, sObject> changedMap = new map<id, sObject>();
+
+        oldObjects = oldObjects != null ? oldObjects : new map<id, sObject>();
+
+        for (sObject newObj : newObjects.values()) {
+            //if there was no existing object meaning this is a new object, and includeNewRecordsAsUpdates is true, this record should be included
+            if (!oldObjects.containsKey(newObj.id) && includeNewRecordsAsUpdates) changedMap.put(newObj.Id, newObj);
+
+            //if there was no existing object meaning this is a new object, and includeNewRecordsAsUpdates is false, this record should be skipped
+            else if (!oldObjects.containsKey(newObj.Id) && !includeNewRecordsAsUpdates) continue;
+
+            sObject oldObj = oldObjects.get(newObj.Id);
+
+            system.debug('\n\n\n----- Comparing ' + newObj.get(fieldName) + ' to ' + oldObj.get(fieldName));
+            if (newObj.get(fieldName) != oldObj.get(fieldName)) {
+                changedMap.put(newObj.Id, newObj);
+            }
+        }
+
+        system.debug('\n\n\n ---------- Found ' + changedMap.size() + ' changed records');
+
+        return changedMap;
+    }

@@ -1,0 +1,145 @@
+Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+Map<String, Schema.DescribeSObjectResult > describeCache = new map<String, Schema.DescribeSObjectResult >();
+
+//list of ids to query for and clone. Must contain only 1 kind of sObject.
+list<id> sObjectIds = new list<id>{'0018A00000TlgkiQAB'};
+
+map<id,sObject> records  = getAllSobjectData(sObjectIds);
+system.debug('\n\n---- Got records data!');
+system.debug(records);
+
+if(records.values().isEmpty())
+{
+    throw new applicationException('No records found in query. Nothing to clone. Aborting.');
+}
+
+list<string> fieldsNotToClone = new list<string>();
+
+map<id,sObject> clones = safeClone(records.values(),true,fieldsNotToClone);
+
+system.debug('\n\n---- Created Clones!');
+system.debug(clones);
+
+
+public static map<id,sObject> safeClone(list<sObject> sourceObjects, boolean doInsert, list<string> excludedFields)
+{
+	map<id,sObject> clonesMap = new map<id,sObject>();
+    string objectName = sourceObjects[0].getSObjectType().getDescribe().getName();
+    Schema.SObjectType objectType = sourceObjects[0].getSObjectType();
+	for(sObject sourceObject : sourceObjects)
+	{
+		sObject clonedObject = objectType.newSObject();
+	
+		try
+		{      
+			if(!globalDescribe.containsKey(objectName)) throw new applicationException('Invalid sObject name: ' + objectName + '. Object does not exist or is not accessible.');
+
+			Map<String, Schema.SObjectField> objectFields;
+			if(describeCache.containsKey(objectName)) objectFields = describeCache.get(objectName).fields.getMap();
+			else
+			{
+				Schema.DescribeSObjectResult objectDescribe = globalDescribe.get(objectName).getDescribe();
+				describeCache.put(objectName,objectDescribe);
+				objectFields = objectDescribe.fields.getMap();
+			}
+		
+			for(string thisField : objectFields.keySet())
+			{
+				//sObjectFields.add(thisField);
+				describeFieldResult thisFieldDescribe = objectFields.get(thisField).getDescribe();
+				
+				if(!excludedFields.contains(thisField) &&
+				   thisFieldDescribe.isAccessible() &&
+				   thisFieldDescribe.isCreateable() &&
+				   !thisFieldDescribe.isUnique())
+				{
+					try
+					{
+						system.debug('\n\n---- Writting to field: ' + thisField + ' value: ' + sourceObject.get(thisField));
+						clonedObject.put(thisField, sourceObject.get(thisField));
+					}
+					catch(exception e)
+					{
+						system.debug('\n\n\n--- Unable to write to field: ' + e.getMessage());
+					}
+				}		
+			}
+			clonesMap.put(sourceObject.Id,clonedObject);
+			
+		}
+		catch(exception e)
+		{
+			handleError(e);
+		}
+	}		
+
+	if(doInsert) insert clonesMap.values();
+	return clonesMap;
+}
+
+public static map<id,sObject> getAllSobjectData(list<id> objectIds)
+{
+	map<id,sObject> results = new map<id,sObject>();
+	try
+	{
+		if(objectIds == null || objectIds.isEmpty()) return results;
+		if(objectIds[0] == null) throw new applicationException('First entry of objectId list may not be null. Must contain a value to determine object id list type');
+		String objectApiName = objectIds[0].getSObjectType().getDescribe().getName();
+
+		string queryString = 'Select ' + String.join(getSobjectFields(objectApiName),',') + ' from '+objectApiName+' where id in :objectIds ';
+
+		system.debug('\n\n\n---- Querystring is....');
+		system.debug(queryString);
+		
+		results = new map<id,sObject> ( database.query(queryString) );
+	}
+	catch(exception e)
+	{
+		handleError(e);
+	}
+	return results;
+}
+
+public static list<string> getSobjectFields(string objectName)
+{
+	list<string> sObjectFields = new list<string>();
+
+	try
+	{
+		if(objectName == null) return sObjectFields;
+
+		if(!globalDescribe.containsKey(objectName)) throw new applicationException('Invalid sObject name: ' + objectName + '. Object does not exist or is not accessible.');
+
+		Map<String, Schema.SObjectField> objectFields;
+		if(describeCache.containsKey(objectName)) objectFields = describeCache.get(objectName).fields.getMap();
+		else
+		{
+			Schema.DescribeSObjectResult objectDescribe = globalDescribe.get(objectName).getDescribe();
+			describeCache.put(objectName,objectDescribe);
+			objectFields = objectDescribe.fields.getMap();
+		}
+	
+		for(string thisField : objectFields.keySet())
+		{
+			//sObjectFields.add(thisField);
+
+			if(objectFields.get(thisField).getDescribe().isAccessible())
+			{
+				sObjectFields.add(thisField);
+			}
+
+		}
+	}
+	catch(exception e)
+	{
+		handleError(e);
+	}
+	return sObjectFields;
+}
+
+public void handleError(exception e)
+{
+	system.debug('\n\n\n------ ERROR!!');
+	system.debug(e.getMessage() + ' on line ' + e.getLineNumber());
+}
+public class applicationException extends Exception {}

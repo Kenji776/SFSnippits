@@ -1,0 +1,33 @@
+    /**
+    * @description gets all the contacts related to the provided accounts and returns a map keyed by account ids with sets of contact ids that belong to that account.
+    * @param relatedAccountIds a set of account ids to get contacts for
+    * @return map<id,set<id>> map of account ids to a set of all their related contacts.
+    **/
+    public static map<id,set<id>> getAccountRelatedContacts(set<id> relatedAccountIds)
+    {
+        map<id,set<id>> accountToContactIds = new map<id,set<id>>();
+        try
+        {
+            system.debug('\n\n\n------ Getting all contacts related to accounts....');
+            system.debug(relatedAccountIds);
+
+            list<AccountContactRelation> acrs = [select accountId, contactId, SMS_Enabled__c, Email__c, Dealer_Active__c, Dealer_Profile__c, Status__c
+                                                 from AccountContactRelation
+                                                 where accountId in :relatedAccountIds and Status__c = 'Active - Portal'];
+
+            for(AccountContactRelation thisAcr : acrs)
+            {
+                set<id> accountContactIds = accountToContactIds.containsKey(thisAcr.accountId) ? accountToContactIds.get(thisAcr.accountId) : new set<id>();
+                accountContactIds.add(thisAcr.ContactId);
+                accountToContactIds.put(thisAcr.accountId,accountContactIds);
+            }
+
+            system.debug('\n\n\n----------- contact to user Map constructed');
+            system.debug(accountToContactIds);
+        }
+        catch(exception e)
+        {
+            handleError(e);
+        }
+        return accountToContactIds;
+    }

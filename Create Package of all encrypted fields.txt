@@ -1,0 +1,33 @@
+list<string> packageFields = new list<string>();
+
+list<Schema.sObjectType> allObjects = Schema.getGlobalDescribe().values();
+
+for (Schema.SObjectType objectType : allObjects) 
+{
+	string objectName = objectType.getDescribe().getName();
+	list<Schema.SObjectfield> fields = objectType.getDescribe().fields.getMap().values();
+
+    for (Schema.SObjectField thisField : fields ) 
+	{
+        if (thisField.getDescribe().isEncrypted()) 
+		{
+            packageFields.add('<members>'+objectName + '.' + thisField.getDescribe().getName()+'</members>\r\n');
+        }
+    }
+}
+
+string packageBody = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n<Package xmlns="http://soap.sforce.com/2006/04/metadata">\r\n<version>48</version>\r\n<types>\r\n<name>CustomField</name>\r\n';
+
+for(string thisField : packageFields)
+{
+	packageBody += thisField;
+}
+
+packageBody += '</types>\r\n</Package>';
+
+Messaging.SingleEmailMessage message = new Messaging.SingleEmailMessage();
+message.toAddresses = new String[] { 'daniel.llewellyn@skience.com' };
+message.subject = 'Encrypted Fields Package';
+message.plainTextBody = packageBody;
+Messaging.SingleEmailMessage[] messages =   new List<Messaging.SingleEmailMessage> {message};
+Messaging.SendEmailResult[] results = Messaging.sendEmail(messages);

@@ -1,0 +1,61 @@
+    public static HttpResponse processSms(set<string> toNumbers, string smsBody)
+    {
+        HTTPResponse res;
+        try
+        {
+            HttpRequest req = new HttpRequest();
+            req.setEndpoint('https://notify.twilio.com/v1/Services/'+notifyServiceId+'/Notifications');
+            req.setMethod('POST');
+            String VERSION = '3.2.0';
+            req.setHeader('X-Twilio-Client', 'salesforce-' + VERSION);
+            req.setHeader('User-Agent', 'twilio-salesforce/' + VERSION);
+            req.setHeader('Accept', 'application/json');
+            req.setHeader('Accept-Charset', 'utf-8');
+            req.setHeader('Authorization', 'Basic ' + EncodingUtil.base64Encode(Blob.valueOf(accountSid + ':' + token)));
+
+
+            list<string> toBindings = new list<string>();
+
+            for(string thisNumber : toNumbers)
+            {
+                if(thisNumber != null  && thisNumber.length() >= 11) //must be at least 11 to include country code (>=1), area code (3) and full US phone number (7)
+                {
+                    thisNumber = thisNumber.replaceAll('[^0-9]', '');
+                    thisNumber = '+' + thisNumber;
+                    toBindings.add('ToBinding='+EncodingUtil.urlEncode('{"binding_type":"sms", "address":"'+thisNumber+'"}','UTF-8'));
+                }
+            }
+
+            if(toBindings.size() == 0)
+            {
+                res = new HttpResponse();
+                res.setStatusCode(400);
+                return res;
+            }
+            req.setBody('Body=' + smsBody + '&' + String.join(toBindings,'&'));
+            Http http = new Http();
+
+
+            if(!Test.isRunningTest())
+            {
+                res = http.send(req);
+            }
+            else
+            {
+                res = new HttpResponse();
+                res.setStatusCode(201);
+            }
+
+            if (res.getStatusCode() != 201)
+            {
+                System.debug(res.getBody());
+                throw new DCP_ApplicationException('Error during Twilio Webservice callout. ' + res.getStatus() + '. ' + res.getBody());
+            }
+
+        }
+        catch(exception e)
+        {
+            DCP_NotificationUtilities.handleError(e);
+        }
+        return res;
+    }

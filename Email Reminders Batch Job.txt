@@ -1,0 +1,82 @@
+global class EventReminder implements Database.Batchable<sObject>, Database.Stateful, Schedulable {
+
+    global integer INVITATION_REMINDER_AGE_DAYS = 3;
+    global string EVENT_STATUS = 'New';
+    global string query;
+
+    global void execute(SchedulableContext ctx)
+    {
+        EventReminder reminderJob = new EventReminder();
+        database.executeBatch(reminderJob);
+    }
+    
+    global Database.QueryLocator start(Database.BatchableContext BC){
+        
+        //create the query if one was not provided (allows for overriding in test class which is useful)
+        if(query==null){
+            //Event Relations must have a filter that contains the EventId. So to find all Events that are valid to query for we simply query for all events that are in the future (no use sending reminders for past events)
+            dateTime rightNow = dateTime.now();
+            query = 'select id, subject, startDateTime, endDateTime from event where startDateTime > :rightNow';            
+        
+        }   
+        
+        return Database.getQueryLocator(query);
+    }
+    
+    global void execute(Database.BatchableContext BC, List<Event> scope){
+        
+        system.debug('\n\n\n------------ Found: ' + scope.size() + ' Events in the future to send reminders for');
+        
+        //create map of event ids to find invitees for. Event data stored by id to compose email later.
+        map<id,event> eventMap = new map<id,event>();
+        for(Event thisEvent :  scope)
+        {
+            eventMap.put(thisEvent.Id,thisEvent);
+        }
+        
+        //find all the invitees that havn't respondend for any of these events.
+        date inviteDate = Date.today().addDays(INVITATION_REMINDER_AGE_DAYS *-1);        
+        list<EventRelation> eventRelations = [Select id, EventId, IsInvitee, RelationId, Status from EventRelation where Status = :EVENT_STATUS and IsInvitee=true and EventId in : eventMap.keySet()]; //CreatedDate = :inviteDate and 
+        
+        system.debug('\n\n\n------------ Found: ' + eventRelations.size() + ' Event Invitations ' + INVITATION_REMINDER_AGE_DAYS + ' days old that have status ' + EVENT_STATUS);
+        
+        list<id> invitieeIds = new list<id>();
+        map<id,list<id>> eventIdToAttendeeMap = new map<id,list<id>>();
+        
+        //we need to group the attendees by their event. Since email templates include information from the event they are invited to we must create one mass email message per event with
+        //all of its related attendees who have not yet responded.
+        for(EventRelation thisRelation : eventRelations)
+        {
+            list<id> attendeeIds = eventIdToAttendeeMap.containsKey(thisRelation.eventId) ? eventIdToAttendeeMap.get(thisRelation.eventId) : new list<id>();
+            attendeeIds.add(thisRelation.RelationId);
+            
+            eventIdToAttendeeMap.put(thisRelation.eventId, attendeeIds);
+        }        
+        
+        Messaging.reserveSingleEmailCapacity(eventRelations.size());
+        
+        //now that all the attendees are grouped to their parent event we can create and send one email per event including the event info.
+        for(id eventId : eventIdToAttendeeMap.keySet())
+        {  
+            system.debug('\n\n\n------------ Prepping Emails for Event: ' + eventId + '. Sending ' + eventIdToAttendeeMap.get(eventId).size());
+            
+            Event eventData = eventMap.get(eventId);
+            
+            string htmlBody = 'This is a reminder that you have not respondend to your invitation for the ' + eventData.subject + ' event. This event begins at ' + eventData.startDateTime.format('MMMMM dd, yyyy hh:mm:ss a');
+            htmlBody += ' and ends at ' + eventData.endDateTime.format('MMMMM dd, yyyy hh:mm:ss a') + '. Please respond at <a href="www.google.com">SomeLink</a>';
+            Messaging.SingleEmailMessage m = new Messaging.SingleEmailMessage();
+            m.setToAddresses(eventIdToAttendeeMap.get(eventId));
+            m.setHtmlBody(htmlBody);
+            m.setSubject('Reminder for Event ' + eventData.subject);
+            Messaging.sendEmail(new Messaging.SingleEmailMessage[] { m });
+                            
+        }
+        
+        
+        
+    }
+    
+    global void finish(Database.BatchableContext BC){
+    
+    }
+}

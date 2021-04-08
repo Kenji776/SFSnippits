@@ -1,0 +1,69 @@
+@isTest
+global class DeepCloneTest
+{
+    public static id createTestConfig()
+    {
+
+        Account testAccount = new Account();
+        testAccount.Name = 'Test Account';
+        insert testAccount;
+
+        Account testAccount2 = new Account();
+        testAccount2.Name = 'Test Account 2';
+        insert testAccount2;        
+       
+        Contact testContact = new Contact();
+        testContact.accountId = testAccount.id;
+        testContact.firstname = 'Bob';
+        testContact.lastname = 'Testguy';
+        
+        insert testContact;
+        
+        Opportunity testOpp = new Opportunity();
+        testOpp.StageName = 'Closed Won';
+        testOpp.AccountId = testAccount.Id;
+        testOpp.closeDate = date.today();
+        testOpp.Name = 'Test Opportunity';
+        insert testOpp;
+        
+        
+        Case testCase = new Case();
+        testCase.contactId = testContact.id;
+        testCase.status = 'New';
+        testCase.Origin = 'Web';
+        
+        insert testCase;
+        
+        return testAccount.Id;
+    }
+    
+    @isTest
+    public static void testDeepClone()
+    {
+        Id createdAccountId = createTestConfig();
+        
+        Test.StartTest();       
+        
+        set<string> cloneableObjects = new set<string>();
+        cloneableObjects.add('Contact');
+        cloneableObjects.add('Opportunity');
+        cloneableObjects.add('Account');
+        cloneableObjects.add('Case');
+        
+        deepClone.clone(createdAccountId, false, false, null, cloneableObjects);
+        Test.StopTest();
+        
+    }
+    
+    @isTest
+    public static void testInvokeCallbackHandler()
+    {
+        Id createdAccountId = createTestConfig();
+        
+        Test.StartTest();      
+        
+        deepClone.invokeCallback('testMethodName', createdAccountId, new list<string>(), true, userInfo.getSessionId());
+        
+        Test.StopTest();
+    }
+}

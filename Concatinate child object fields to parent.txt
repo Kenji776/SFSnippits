@@ -1,0 +1,54 @@
+public class OpportunityProductTriggerHandler
+{
+    public void onAfterInsert(map<id,Opportunity_Product__c > newProducts)
+    {
+        setOpportunityProductNames(newProducts.values());
+    }    
+    public void onAfterUpdate(List<Opportunity_Product__c > newProducts, map<id,Opportunity_Product__c > oldProducts)
+    {
+        setOpportunityProductNames(newProducts);
+    }
+    
+    public void onAfterUndelete(List<Opportunity_Product__c > newProducts)
+    {
+        setOpportunityProductNames(newProducts);
+    }
+    public void onAfterDelete(map<id,Opportunity_Product__c > oldProducts)
+    {
+        setOpportunityProductNames(oldProducts.values());
+    }
+
+    private list<Opportunity> setOpportunityProductNames(list<Opportunity_Product__c > opportunityProducts)
+    {
+        //1 create map of all opportunities related to any of the incoming opportunity products
+        //2 find all opportunity products related to any of those accounts
+        //3 populate the set of product names in the opportunityProductNamesMap by iterating over the products
+        //4 update the products.
+        
+        map<Id,set<string>> opportunityProductNamesMap = new map<id,set<string>>();
+        list<Opportunity> updateOpps = new list<Opportunity>();       
+
+        for(Opportunity_Product__c thisOpportunityProduct : OpportunityProducts)
+        {
+            opportunityProductNamesMap.put(thisOpportunityProduct.Opportunity__c,new set<string>());
+        }
+
+        for(Opportunity_Product__c oppProduct : [select id, product__c, opportunity__c from Opportunity_Product__c  where opportunity__c in :opportunityProductNamesMap.keySet()] )
+        {
+            set<string> productNamesForOpp = opportunityProductNamesMap.containsKey(oppProduct.Opportunity__c) ? opportunityProductNamesMap.get(oppProduct.Opportunity__c) : new set<string>();
+            productNamesForOpp.add(oppProduct.Product__c);
+            opportunityProductNamesMap.put(oppProduct.Opportunity__c,productNamesForOpp);
+        }
+        
+        for(Id oppId : opportunityProductNamesMap.keySet())
+        {
+            Opportunity thisOpp = new Opportunity(id=oppId);
+            thisOpp.Selected_Products__c = String.join(new list<string> (opportunityProductNamesMap.get(oppId)), ',');
+            thisOpp.Product_s__c= String.join(new list<string> (opportunityProductNamesMap.get(oppId)), ';');
+            updateOpps.add(thisOpp);
+        }
+        
+        update updateOpps;  
+        return updateOpps;  
+    } 
+}

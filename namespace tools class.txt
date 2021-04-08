@@ -1,0 +1,88 @@
+/**
+* @Name: NamespaceHandler
+* @Description: Impliments logic and handlers to automatically convert your field names, object names, and more to handle namespacing in an org that may or may not have a namespace.
+*              This is useful for if your package is being developed in an org without a namespace, then moved to an org with one. Or if you plan to have an unmanaged and managed
+*              version of your package you can wrap any dynamic query fields or references in this the correlating methods to handle namespacing. Just instantiate an instance of this class
+*              and on your strings, sets of strings, or lists of strings call the makeNSSafe method and automatic conversion will happen were needed and will not when it doesn't.
+* @Author: Daniel Llewellyn
+* @Date: 11/07/2018
+**/
+public with sharing class NamespaceHandler {
+
+    //Static final string which holds the namespace so it does not need to be computed every time.
+    public final string NAMESPACE = getNamespace();
+
+    /**
+    *@Description: Gets the current namespace that this class belongs to. If in an unmanaged non namespaced org it returns nothing. If in a namespaced dev org it returns the orgs namespace.
+    *@Return: string the namespace string including __ of the current org if one exists. Otherwise returns blank string.
+    **/
+    public string getNamespace()
+    {
+        String CurrentClassName = String.valueOf(this).substring(0,String.valueOf(this).indexOf(':'));
+
+        string np = [SELECT NamespacePrefix FROM ApexClass where Name = :CurrentClassName limit 1].NamespacePrefix;
+        string returnString = np != null ? np+'__' : '';
+        return returnString;
+    }
+
+    /**
+    * @Description: adds namespace to all fields in a json string. Useful for when recieving data from an a lightning component or external source that may not be aware of the namespace.
+    * @Param jsonString the JSON string to parse and update with namespace. Do not pass in formated JSON. The regex will choke and say too complicated. Strip all line breaks, tabs, etc first.
+    * @Return the same json string with namespaces added where needed.
+    **/
+    public string addNamespaceToJsonString(string jsonString)
+    {
+        if(string.isEmpty(NAMESPACE)) return jsonString;
+
+        string regex = '"([^"]*)__c"';
+        Pattern regexPattern = Pattern.compile(regex);
+        Matcher regexMatcher = regexPattern.matcher(jsonString);
+
+        while(regexMatcher.find())
+        {
+            //only add namespace if it doesn't exist.
+            if(!regexMatcher.group().startsWith('"'+NAMESPACE))
+            {
+                //preappend the namespace. Because the regex is a little off we have to do some extra string manipulation as well.
+                jsonString = jsonString.replace(regexMatcher.group(), '"'+nameSpace+''+regexMatcher.group(1)+'__c"');
+            }
+        }
+        return jsonString;
+    }
+
+    /**
+    *@Description: Makes a set of strings namespace safe. Good for constructing a set of fields to query and making them namespace safe in one go.
+    *@Param makeSafe a set of strings to prepend namespace to.
+    *@Return: set of strings with namespace prepended if required
+    **/
+    public set<string> makeNSSafe(set<string> makeSafe)
+    {
+        set<string> safeNames = new set<string> ( makeNSSafe(  new list<string>(makeSafe) ) );
+        return safeNames;
+    }
+
+    /**
+    *@Description: Makes a list of strings namespace safe.
+    *@Param makeSafe a list of strings to prepend namespace to.
+    *@Return: set of strings with namespace prepended if required
+    **/
+    public list<string> makeNSSafe(list<string> makeSafe)
+    {
+        list<string> safeNames = new list<string>();
+        for(string thisString : makeSafe){
+            safeNames.add( makeNSSafe(thisString) );
+        }
+        return safeNames;
+    }
+
+    /**
+    *@Description: Makes a string namespace safe.
+    *@Param makeSafe a string to prepend namespace to.
+    *@Return: string with namespace prepended if required
+    **/
+    public string makeNSSafe(string makeSafe)
+    {
+        if(!makeSafe.startsWith(NAMESPACE) && (makeSafe.endsWith('__c') || makeSafe.endsWith('__r'))) makeSafe = NAMESPACE + makeSafe;
+        return makeSafe;
+    }
+}

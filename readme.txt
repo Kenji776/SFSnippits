@@ -1,0 +1,1 @@
+My personal collection of reusable Salesforce code collected over the years. I make no guarentees about quality or function. You are free to use any of these but I won't be offering any support (most likely, maybe if you are really nice).

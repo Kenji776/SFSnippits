@@ -1,0 +1,195 @@
+    /**
+    * @Date: Jul 20, 2017
+    * @description syncronizes the fields between objects. The objects do not have to be of the same type since field mappings are provided.
+    * @param rootToTargetMap mapping of root object id to target object id. The root object provides the data, the target receives it
+    * @param rootMap id to sObject mapping. Contains the information to be copied onto the target objects.
+    * @param targetMap id to sObject mapping. Contains the sObjects to update data on.
+    * @param fields mapping of field name on root object to field name on target object.
+    * @param doUpdate should the code perform the actual update to the database?
+    * @param useAsyncUpdate should an @future method be used to perform the update? Disregarded if doUPdate is false.
+    * @param specialReplacements advanced feature. Allows passing of a field name on the root object that instead of copying it's own source value will copy over the value found for that field in the inner map.
+    * @return String url of site that can be used to create hyperlinks
+    **/
+    public static syncResults syncObjectFields(map<id, id> rootToTargetMap,
+                                               map<id, sObject> rootMap,
+                                               map<id, sObject> targetMap,
+                                               map<string, string> fields,
+                                               boolean doUpdate,
+                                               boolean useAsyncUpdate,
+                                               map<string,map<string,string>> specialReplacments) {
+        syncResults thisResult = new syncResults();
+
+        if(rootToTargetMap.isEmpty() ||
+           rootToTargetMap.values().size() == 0 ||
+           rootMap.isEmpty() ||
+           rootMap.values().size() == 0 ||
+           targetMap.isEmpty() ||
+           targetMap.values().size() == 0 ||
+           fields.isEmpty() ||
+           fields.values().size() == 0)
+        return thisResult;
+
+        system.debug('\n\n\n----------- Preparing to sync records between ' + new list<id>(rootToTargetMap.keyset())[0].getSobjectType().getDescribe().getName() + ' and '+ new list<id>(rootToTargetMap.values())[0].getSobjectType().getDescribe().getName());
+        system.debug('\n\n\n------------Is Future Context?: ' + system.isFuture());
+        system.debug(rootToTargetMap);
+        system.debug(rootMap);
+        system.debug(targetMap);
+        system.debug(fields);
+
+
+
+        list<sObject> updatedObjects = new list<sObject>();
+        map<id, sObject> updateObjectMap = new map<id, sObject>();
+        set<string> falseyValues = new set<string>{'false','0','null','undefined','','inactive'};
+
+
+
+        //to try and cast root values to the target values field types we need to describe the fields on the target object type.
+        //this is to support something like if the source value was a STRING that says true, and has to try and write that to a boolean field
+        //on the target object. Since you can't put a string into a boolean (and other such nonsense) we need to do some automatic conversion if the first
+        //attempt to just do a pure copy fails.
+        Map<String,Schema.SObjectType> gd = Schema.getGlobalDescribe();
+        Schema.SObjectType sobjType = gd.get(rootToTargetMap.values()[0].getSObjectType().getDescribe().getName());
+        Schema.DescribeSObjectResult r = sobjType.getDescribe();
+        Map<String,Schema.SObjectField> targetFields = r.fields.getMap();
+
+        for (id rootObjectId : rootToTargetMap.keySet())
+        {
+            boolean objectUpdated = false;
+            sObject rootObject = rootMap.get(rootObjectId);
+            sObject targetObject = targetMap.get(rootToTargetMap.get(rootObjectId));
+            id targetObjectId = rootToTargetMap.get(rootObjectId);
+            string objectTypeName = rootObject.getSObjectType().getDescribe().getName();
+
+            for (string thisField : fields.keySet())
+            {
+                object rootObjectValue = rootObject.get(thisField);
+                object targetObjectValue = targetObject.get(fields.get(thisField));
+
+                string targetFieldName = fields.get(thisField);
+                Schema.DescribeFieldResult dfr = targetFields.get(targetFieldName).getDescribe();
+
+                Schema.DisplayType displayType = dfr.getType();
+
+                try
+                {
+                    system.debug('\n\n\n--------- Comparing ' + rootObjectValue + ' to ' + targetObjectValue);
+                    //don't bother doing anything of the root and target values are already the same. No sense making pointless updates.
+                    if (rootObjectValue != targetObjectValue)
+                    {
+
+                        object valueToWrite;
+
+                        if(specialReplacments != null && specialReplacments.containsKey(thisField) && specialReplacments.get(thisfield).containsKey(string.valueOf(rootObjectValue)))
+                        {
+                            valueToWrite = specialReplacments.get(thisfield).get(string.valueOf(rootObjectValue));
+                        }
+                        else
+                        {
+                            valueToWrite = rootObjectValue;
+                        }
+
+                        if(displayType == Schema.DisplayType.Boolean)
+                        {
+                            targetObject.put(targetFieldName,boolean.valueOf(valueToWrite));
+                            objectUpdated = true;
+                        }
+                        else if(displayType == Schema.DisplayType.Integer)
+                        {
+                            targetObject.put(targetFieldName,Integer.valueOf(valueToWrite));
+                            objectUpdated = true;
+                        }
+                        else if(displayType == Schema.DisplayType.Double)
+                        {
+                            targetObject.put(targetFieldName,Double.valueOf(valueToWrite));
+                            objectUpdated = true;
+                        }
+                        else if(displayType == Schema.DisplayType.Date)
+                        {
+                            targetObject.put(targetFieldName,Date.Parse(String.valueOf(valueToWrite)));
+                            objectUpdated = true;
+                        }
+                        else if(displayType == Schema.DisplayType.DateTime)
+                        {
+                            targetObject.put(targetFieldName,DateTime.Parse(String.valueOf(valueToWrite)));
+                            objectUpdated = true;
+                        }
+                        else
+                        {
+                            targetObject.put(targetFieldName,String.valueOf(valueToWrite));
+                            objectUpdated = true;
+                        }
+                        //we have to do the check for matching values again because the special replacements logic may have changed the value to be written.
+                        if(objectUpdated)
+                        {
+                            system.debug('\n\n\n--------- Compare not equal. Change detected');
+                            targetMap.put(targetObjectId, targetObject);
+                        }
+                        else
+                        {
+                            system.debug('\n\n\n--------- Values equal. No updated for field required.');
+                        }
+                    }
+                }
+                catch (exception e)
+                {
+                    system.debug('\n\n\n\n----------- Error sycing field ' + thisField + ' to ' + targetFieldName);
+                    system.debug(e.getMessage() + ' on line ' + e.getLineNumber());
+
+                    throw new DCP_ApplicationException('No viable conversion found for value: ' + rootObjectValue + ' to type ' + displayType.name());
+                }
+            }
+            if (objectUpdated)
+            {
+                system.debug('\n\n\n-------- Object was updated. Adding to list of required records to update.');
+                thisResult.updatedObjectIds.add(targetObjectId);
+                thisResult.updatedObjectMap.put(targetObjectId, targetMap.get(targetObjectId));
+            }
+
+        }
+
+        if (doUpdate && !thisResult.updatedObjectMap.isEmpty()) {
+            system.debug('\n\n\n-------- Updating ' + thisResult.updatedObjectMap.size() + ' values');
+            system.debug(thisResult.updatedObjectMap.values());
+
+            string objectType = string.valueOf(thisResult.updatedObjectMap.values()[0].getSObjectType().getDescribe().getName());
+
+            if(useAsyncUpdate && doUpdate)
+            {
+                system.debug('Queueing records for update by future method');
+                DCP_NotificationUtilities.insertRecordsAsync(json.serialize(thisResult.updatedObjectMap.values()), objectType);
+            }
+            else if(doUpdate)
+            {
+                system.debug('Updating Records Syncronously!');
+                database.saveResult[] objectUpdates = database.update(thisResult.updatedObjectMap.values(),false);
+
+                for(database.saveResult thisSaveResult : objectUpdates)
+                {
+                    system.debug(thisSaveResult);
+
+                    integer counter = 0;
+                    if(!thisSaveResult.isSuccess())
+                    {
+                        system.debug('Errors updating record!');
+                        for(Database.Error thisError : thisSaveResult.getErrors())
+                        {
+                            system.debug('\n\n\n-------' + thisError.getMessage() + ' ' + thisError.getFields() + ' ' + thisError.getStatusCode());
+                        }
+                    }
+                    counter++;
+                }
+            }
+        }
+
+        if (thisResult.updatedObjectMap.isEmpty()) {
+            system.debug('\n\n\n-------- No records were changed. No update required.');
+        }
+        return thisResult;
+
+    }
+
+    public class syncResults {
+        public set<id> updatedObjectIds = new set<id>();
+        public map<id, sObject> updatedObjectMap = new map<id, sObject>();
+    }

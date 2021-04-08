@@ -1,0 +1,191 @@
+public with sharing class ContactTriggerHandler {
+
+    public ContactTriggerHandler() {
+
+    }
+
+    public void onBeforeInsert( List<Contact> newContacts)
+    {
+        setContactAddresses(newContacts, null);
+    }
+
+    public void onBeforeUpdate( List<Contact> newContacts, map<id,contact> oldContacts)
+    {
+        setContactAddresses(newContacts, oldContacts);
+    }
+    
+    public void onAfterInsert(map<id,contact> newContacts)
+    {
+        countNumberOfContacts(newContacts.values());
+    }    
+    public void onAfterUpdate(List<Contact> newContacts, map<id,contact> oldContacts)
+    {
+        countNumberOfContacts(newContacts);
+    }
+    
+    public void onAfterUndelete(List<Contact> newContacts)
+    {
+        countNumberOfContacts(newContacts);
+    }
+    public void onAfterDelete(map<id,contact> oldContacts)
+    {
+        countNumberOfContacts(oldContacts.values());
+    }
+
+    private list<Account> countNumberOfContacts(list<contact> contacts)
+    {
+        set<Id> accountIds = new set<Id>();
+		list<Account> updateAccounts = new list<Account>();
+		map<id,AggregateResult> aggResultsByAccountId = new map<id,AggregateResult>();
+		
+        //add all accounts that are going to need their counters updated to the set
+        for(contact thisContact : contacts)
+        {
+            accountIds.add(thisContact.accountid);
+        }
+
+        map<Id,Account> accounts = new map<Id,Account>( [select id, Number_of_Related_Contacts__c from account where id in :accountIds] );
+        
+		system.debug('\n\n\n----- All Accounts');
+		system.debug(accounts);
+		
+        //run the query to sum the data. There will only be rows where there 
+        AggregateResult[] numContacts = [select Count(Id)numContacts ,accountId                     
+                                         From Contact                                         
+                                         where accountId in :accountIds and accountId != null
+                                         group by ROLLUP (accountId)];
+
+		for(AggregateResult ar: numContacts)
+        {
+			aggResultsByAccountId.put((Id) ar.get('accountId'), ar);
+		}
+        //loop over the result set. One row per account with a totalAge and accountId column
+        system.debug('\n\n\n------ Aggregate results');
+		system.debug(numContacts);
+		
+		for(Account thisAccount : accounts.values())
+		{
+			double numContactsForThisAccount;
+			AggregateResult thisAr = aggResultsByAccountId.containsKey(thisAccount.Id) ? aggResultsByAccountId.get(thisAccount.Id) : null;
+			
+			system.debug('\n\n\n------ Found aggregate result');
+			system.debug(thisAr);
+			
+			if(thisAr == null) numContactsForThisAccount = 0;
+			else
+			{
+				numContactsForThisAccount = (double) thisAr.get('numContacts');
+			}
+			
+			system.debug('\n\n\n---- Number of contacts for this account is now: ' + numContactsForThisAccount);
+			if(thisAccount.Number_of_Related_Contacts__c == null || numContactsForThisAccount != thisAccount.Number_of_Related_Contacts__c)
+			{
+				thisAccount.Number_of_Related_Contacts__c = numContactsForThisAccount;
+				system.debug('Updating number of related contacts for account ' + thisAccount.Id + ' to ' + numContactsForThisAccount);
+				updateAccounts.add(thisAccount);
+			}
+		}
+
+		system.debug(updateAccounts);
+		
+        update updateAccounts;  
+        return updateAccounts;  
+    } 
+            
+    private list<contact> setContactAddresses(list<Contact> newContacts, map<Id,Contact> oldContacts)
+    {
+        map<id,address__c> addressMap = new map<id,address__c>();
+        oldContacts = oldContacts != null ? oldContacts : new map<Id,Contact>();
+        
+        for(Contact thisContact : newContacts)
+        {
+            Contact oldContact = oldContacts.containsKey(thisContact.id) ? oldContacts.get( thisContact.Id ) : null;
+            
+            if ( oldContact == null || thisContact.Mailing_Address_GIM2__c != oldContact.Mailing_Address_GIM2__c && String.isNotEmpty( thisContact.Mailing_Address_GIM2__c ) )
+            {                    
+                addressMap.put(thisContact.Mailing_Address_GIM2__c,null);
+            }
+            if ( oldContact == null || thisContact.GIM2_Seasonal_Address__c!= oldContact.GIM2_Seasonal_Address__c && String.isNotEmpty( thisContact.GIM2_Seasonal_Address__c) )
+            {
+                addressMap.put(thisContact.GIM2_Seasonal_Address__c,null);
+            }
+        }
+        
+        addressMap = new map<id,address__c>( [select Street_Line_1__c,
+                                                Street_Line_2__c,
+                                                Street_Line_3__c,
+                                                Street_Line_4__c,
+                                                City__c,
+                                                State_Code__c,
+                                                Country__c,
+                                                State__c,
+                                                Zip_Code__c,
+                                                Seasonal_Address_Start_Date__c,
+                                                Seasonal_Address_End_Date__c
+                                         from address__c where id in :addressMap.keySet()] );
+        for(Contact thisContact : newContacts)
+        {
+            if(addressMap.containsKey(thisContact.Mailing_Address_GIM2__c)) thisContact = AddressUtilities.updateContactMailingAddress(thisContact, addressMap.get(thisContact.Mailing_Address_GIM2__c));
+            if(addressMap.containsKey(thisContact.GIM2_Seasonal_Address__c)) thisContact = AddressUtilities.updateContactAddressSeasonal(thisContact, addressMap.get(thisContact.GIM2_Seasonal_Address__c));
+            else if(thisContact.GIM2_Seasonal_Address__c == null) thisContact = AddressUtilities.updateContactAddressSeasonal(thisContact, null);
+        }     
+        
+        return newContacts;   
+    }
+    /* Depreciated by before insert and before update methods. (Dan Llewellyn/dllewellyn@liquidhub.com, 4/17/2017)
+    public void onAfterInsert( List<Contact> insertedContacts ){
+
+        Map<Id, Id> contactIdToAddressId = new Map<Id, Id>();
+        for ( Contact aContact : insertedContacts ){
+            if ( String.isNotEmpty( aContact.Mailing_Address_GIM2__c ) ){
+                contactIdToAddressId.put ( aContact.Id, aContact.Mailing_Address_GIM2__c );
+            }
+        }
+        
+        updateContactAddress( contactIdToAddressId, insertedContacts );
+    }
+
+    public void onAfterUpdate ( List<Contact> updatedContacts, Map<Id, Contact> oldContacts ){
+
+        Map<Id, Id> contactIdToAddressId = new Map<Id, Id>();
+        for ( Contact aContact : updatedContacts )
+        {
+            Contact oldContact = oldContacts.get( aContact.Id );
+            if ( aContact.Mailing_Address_GIM2__c != oldContact.Mailing_Address_GIM2__c && String.isNotEmpty( aContact.Mailing_Address_GIM2__c ) )
+            {
+                contactIdToAddressId.put ( aContact.Id, aContact.Mailing_Address_GIM2__c );
+            }
+        }
+        
+        if ( !contactIdToAddressId.isEmpty() )
+            updateContactAddress( contactIdToAddressId, updatedContacts );
+    }
+
+    private void updateContactAddress( Map<Id, Id> contactIdToAddressId, List<Contact> contacts ){
+
+        Map<Id, Address__c> contactToAddress = new Map<Id, Address__c>();
+        Map<Id, Contact> contactMap = new Map<Id, Contact> ( contacts );
+        Map<Id, Address__c> addresses = new Map<Id, Address__c> ( [SELECT Street_Line_1__c,  Street_Line_2__c, Street_Line_3__c,
+                                                                                                                                City__c, State__c, Zip_Code__c, Country__c
+                                                                                                                  FROM Address__c
+                                                                                                                  WHERE Id IN :contactIdToAddressId.values() ] );
+
+        for ( Id contactId : contactIdToAddressId.keySet() ){
+            Id addressId = contactIdToAddressId.get( contactId );
+            contactToAddress.put( contactId, addresses.get( addressId ) );
+        }
+
+        List<Contact> contactToUpdate = AddressUtilities.updateContactAddress( contactToAddress );
+        List<Database.SaveResult> updateResults = Database.update(contactToUpdate, false);
+        for( Integer i=0; i < updateResults.size(); i++ ){
+            if ( !updateResults.get(i).isSuccess() ){
+                // DML operation failed
+                Database.Error error = updateResults.get(i).getErrors().get(0);
+                String failedDML = error.getMessage();
+                Id errorID = contactToUpdate.get(i).Id;
+                contactMap.get( errorId ).addError( failedDML );
+            }
+        }
+    }
+    */
+}

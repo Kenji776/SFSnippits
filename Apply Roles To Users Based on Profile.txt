@@ -1,0 +1,11 @@
+list<string> appliedToProfiles = new list<string>{'ETHIC Operations','ETHIC Service & Support'};
+string roleToApply = 'CEO';
+
+list<userrole> roles = [select name,id from userrole where name = :roleToApply limit 1];
+
+list<user> users = [select id from user where profile.name in :appliedToProfiles];
+
+for(user thisUser : users)
+{
+	thisUser.userRoleId = roles[0].id;
+}

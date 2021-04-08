@@ -1,0 +1,13 @@
+
+list<string> clear = new list<string>{'Case','Contact','Opportunity','Lead','Task','Account'};
+
+for(string thisObject : clear)
+{
+	string query = 'select id from ' + thisObject;
+    if(thisObject == 'contact') query += ' where isPersonAccount = false';
+    list<sobject> objects = database.query(query);
+    database.delete(objects,true);
+}
+
+
+

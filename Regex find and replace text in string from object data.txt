@@ -1,0 +1,96 @@
+    public static string evaluateKeyordString(string keywordString, sObject objectData, sObject relatedObjectData)
+    {
+        try
+        {
+            if(keywordString == null ) return '';
+            keywordString = keywordString.replace('{!TODAY}',date.today().format());
+            keywordString = keywordString.replace('{!YEAR}',string.valueOf(date.today().year()));
+            keywordString = keywordString.replace('{!MONTH}',string.valueOf(date.today().month()));
+            keywordString = keywordString.replace('{!DAY}',string.valueOf(date.today().day()));
+            keywordString = keywordString.replace('{!RANDOM}', string.valueOf(Crypto.getRandomLong()));
+            keywordString = keywordString.replace('{!USERID}', string.valueOf(UserInfo.getUserId()));
+            keywordString = keywordString.replace('{!PROFILEID}', string.valueOf(UserInfo.getProfileId()));
+
+            dateTime lastQ = dateTime.now().addMonths(-3);
+            string lastQuarterDate = lastQ.format('YYYY-MM-dd');
+            keywordString = keywordString.replace('{!LASTQUARTERDATE}', lastQuarterDate);
+
+            //this is an expensive process so don't call it unless we need to
+            if(keywordString.contains('{!CHECKSUM}'))
+            {
+                string objectDataString = JSON.serialize(objectData);
+                Blob hash = Crypto.generateDigest('MD5', Blob.valueOf(objectDataString));
+                String hexDigest = EncodingUtil.convertToHex(hash);
+                keywordString = keywordString.replace('{!CHECKSUM}',hexDigest);
+            }
+
+            integer quarterIndex = (integer) Math.ceil( (date.today().month() -1) /3+1);
+            integer lastQuarterIndex = quarterIndex == 1 ? 4 : quarterIndex-1;
+
+            string quarter = string.valueOf(quarterIndex);
+
+            keywordString = keywordString.replace('{!QUARTER}',quarter);
+
+            keywordString = keywordString.replace('{!LASTQUARTER}',string.valueOf(lastQuarterIndex));
+            string quarterNameRnage = '';
+            //sort of wish apex has switch statments here. oh well.
+            if(quarterIndex ==1) quarterNameRnage = '(Jan-Mar)';
+            else if(quarterIndex ==2) quarterNameRnage = '(Apr-Jun)';
+            else if(quarterIndex ==3) quarterNameRnage = '(Jul-Sep)';
+            else if(quarterIndex ==4) quarterNameRnage = '(Oct-Dec)';
+
+            keywordString = keywordString.replace('{!QUARTERRANGE}',quarterNameRnage);
+
+            //perform replacements for {!Object.fieldName} syntax
+            if(objectData != null)
+            {
+                Pattern MyPattern = Pattern.compile('\\{\\!Object(.*?)\\}');
+
+                Matcher MyMatcher = MyPattern.matcher(keywordString);
+
+                while(MyMatcher.find())
+                {
+                    try
+                    {
+                        list<string> matchParts = MyMatcher.group().split('\\.');
+                        if(matchParts.size() != 2) throw new DCP_ApplicationException('Invalid object field string. ' + MyMatcher.group() + '. Please use {!Object.FieldName} format.');
+                        string replaceVal = (string) objectData.get((string) matchParts[1].removeEnd('}'));
+                        replaceVal = replaceVal == null ? '' : replaceVal;
+                        keywordString = keywordString.replace(MyMatcher.group(),replaceVal);
+                    }
+                    catch(exception e)
+                    {
+                        throw new DCP_ApplicationException('Error encountered processing keyword string ' + keywordString + ' ' + e.getMessage() + ' line ' + e.getLineNumber()  );
+                    }
+                }
+            }
+
+            if(relatedObjectData != null)
+            {
+                Pattern MyPattern = Pattern.compile('\\{\\!RelObj(.*?)\\}');
+
+                Matcher MyMatcher = MyPattern.matcher(keywordString);
+
+                while(MyMatcher.find())
+                {
+                    try
+                    {
+                        list<string> matchParts = MyMatcher.group().split('\\.');
+                        if(matchParts.size() != 2) throw new DCP_ApplicationException('Invalid object field string. ' + MyMatcher.group() + '. Please use {!Object.FieldName} format.');
+                        string replaceVal = (string) relatedObjectData.get((string) matchParts[1].removeEnd('}'));
+                        replaceVal = replaceVal == null ? '' : replaceVal;
+                        keywordString = keywordString.replace(MyMatcher.group(),replaceVal);
+                    }
+                    catch(exception e)
+                    {
+                        throw new DCP_ApplicationException('Error encountered processing keyword string ' + keywordString + ' ' + e.getMessage() + ' line ' + e.getLineNumber()  );
+                    }
+                }
+            }
+        }
+        catch(exception e)
+        {
+            handleError(e);
+        }
+        return keywordString;
+    }

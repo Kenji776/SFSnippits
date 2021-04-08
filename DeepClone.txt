@@ -1,0 +1,415 @@
+global class DeepClone implements Queueable{
+
+    //users session id. Used to perform dynamic callback via tooling API.
+    public string sessionId;
+    
+    //the Id of the record that was the root of the clone job.
+    public id rootRecordId;
+    
+    //global describe to hold object describe data for query building and relationship iteration
+    public map<String, Schema.SObjectType> globalDescribeMap = Schema.getGlobalDescribe();
+    
+    //holds the data to be cloned. Keyed by object type. Contains cloneData which contains the object to clone, and some data needed for queries
+    public map<string,cloneData> thisInvocationCloneMap = new map<string,cloneData>();
+    
+    //should the clone process be all or nothing?
+    public boolean allOrNothing = false;
+    
+    //each iteration adds the records it creates to this property so in the event of an error we can roll it all back
+    public list<id> allCreatedObjects = new list<id>();
+    
+    //only clone custom objects. Helps to avoid trying to clone system objects like chatter posts and such.
+    public boolean onlyCloneCustomObjects = true;
+    
+    //optional string that specifies a static apex method to invoke when complete. Similar to a javascript callback (ex 'myClass.methodName')
+    public string callback;
+
+    //allows passing of only specific objects to clone. If this is populated it supercedes the the only clone standard or custom objects logic.
+    public set<string> specificObjectsToClone = new set<string>();
+    
+    //allows the caller to change field values on the cloned objects. Specify an object type and in the map populate the
+    //field to set and the value to set it to. This value cannot be passed into the clone method, so if adjustments need to be made
+    //the caller has to create their own instance of the deepClone class and call deepCloneBatched directly. Use the code in the clone
+    //method as an example for how to do that.    
+    public map<string,map<string,string>> clonedObjectFieldAdjustments = new map<string,map<string,string>>();
+    
+    //easiest way to invoke the deep clone. 
+    public static AssessmentController.remoteCallResponse clone(id sObjectId, boolean onlyCustomObjects, boolean allOrNothing, string callback)
+    {
+        return  DeepClone.clone(sObjectId, onlyCustomObjects, allOrNothing, callback, new set<string>());
+    }
+    public static AssessmentController.remoteCallResponse clone(id sObjectId, boolean onlyCustomObjects, boolean allOrNothing, string callback, set<string> specificObjects)
+    {
+        AssessmentController.remoteCallResponse response = new AssessmentController.remoteCallResponse();
+        try
+        {
+            deepClone startClone= new deepClone();
+            startClone.onlyCloneCustomObjects  = onlyCustomObjects;
+            startClone.allOrNothing = allOrNothing;
+            startClone.callback = callback;
+            startClone.rootRecordId = sObjectId;
+            startClone.sessionId = UserInfo.getSessionId();
+            startClone.specificObjectsToClone = specificObjects;
+            sObject thisObject = sObjectId.getSobjectType().newSobject(sObjectId);
+            cloneData thisClone = new cloneData(new list<sObject>{thisObject}, new map<id,id>());
+            map<string,cloneData> cloneStartMap = new map<string,cloneData>();
+            
+            cloneStartMap.put(sObjectId.getSobjectType().getDescribe().getName(),thisClone);
+            
+            startClone.thisInvocationCloneMap = cloneStartMap;
+            response.data = System.enqueueJob(startClone);
+            response.message = 'Clone Job Started';
+        }
+        catch(exception e)
+        {
+            response.message = 'An error ocurred attempting to start clone job. ' + e.getMessage();
+            response.success = false;
+        }
+        return response;      
+    }
+    
+    public void execute(QueueableContext context) {
+        deepCloneBatched();
+    }
+        
+    /**
+    * @description Clones an object and the entire related data hierarchy. Currently only clones custom objects, but enabling standard objects is easy. It is disabled because it increases risk of hitting governor limits
+    * @param sObject objectToClone the root object be be cloned. All descended custom objects will be cloned as well
+    * @return list<sobject> all of the objects that were created during the clone.
+    **/
+    public list<id> deepCloneBatched()
+    {
+        map<string,cloneData> nextInvocationCloneMap = new map<string,cloneData>();
+        
+        //iterate over every object type in the public map
+        for(string relatedObjectType : thisInvocationCloneMap.keySet())
+        { 
+            list<sobject> objectsToClone = thisInvocationCloneMap.get(relatedObjectType).objectsToClone;
+            map<id,id> previousSourceToCloneMap = thisInvocationCloneMap.get(relatedObjectType).previousSourceToCloneMap;
+            
+            system.debug('\n\n\n--------------------  Cloning record ' + objectsToClone.size() + ' records of type ' +relatedObjectType );
+            list<id> objectIds = new list<id>();
+            list<sobject> clones = new list<sobject>();
+            list<sObject> newClones = new list<sObject>();
+            map<id,id> sourceToCloneMap = new map<id,id>();
+            list<database.saveresult> cloneInsertResult;
+                       
+            //if this function has been called recursively, then the previous batch of cloned records
+            //have not been inserted yet, so now they must be before we can continue. Also, in that case
+            //because these are already clones, we do not need to clone them again, so we can skip that part
+            if(objectsToClone[0].Id == null)
+            {
+                //if they don't have an id that means these records are already clones. So just insert them with no need to clone beforehand.
+                cloneInsertResult = database.insert(objectsToClone,allOrNothing);
+
+                clones.addAll(objectsToClone);
+                
+                for(sObject thisClone : clones)
+                {
+                    sourceToCloneMap.put(thisClone.getCloneSourceId(),thisClone.Id);
+                }
+                            
+                objectIds.addAll(new list<id>(previousSourceToCloneMap.keySet()));
+                //get the ids of all these objects.                    
+            }
+            else
+            {
+                //get the ids of all these objects.
+                for(sObject thisObj :objectsToClone)
+                {
+                    objectIds.add(thisObj.Id);
+                }
+    
+                //create a select all query to get all the data for these objects since if we only got passed a basic sObject without data 
+                //then the clone will be empty
+                string objectDataQuery = buildSelectAllStatment(relatedObjectType);
+                
+                //add a where condition
+                objectDataQuery += ' where id in :objectIds';
+                
+                //get the details of this object
+                list<sObject> objectToCloneWithData = database.query(objectDataQuery);
+    
+                for(sObject thisObj : objectToCloneWithData)
+                {              
+                    sObject clonedObject = thisObj.clone(false,true,false,false);
+                    clones.add(clonedObject);               
+                }    
+                
+                //insert the clones
+                cloneInsertResult = database.insert(clones,allOrNothing);
+                
+                for(sObject thisClone : clones)
+                {
+                    sourceToCloneMap.put(thisClone.getCloneSourceId(),thisClone.Id);
+                }
+            }        
+            
+            for(database.saveResult saveResult :  cloneInsertResult)
+            {
+                if(saveResult.success)
+                {
+                    allCreatedObjects.add(saveResult.getId());
+                }
+                else if(allOrNothing)
+                {
+                    cleanUpError();
+                    return allCreatedObjects;
+                }
+            }
+              
+            //Describes this object type so we can deduce it's child relationships
+            Schema.DescribeSObjectResult objectDescribe = globalDescribeMap.get(relatedObjectType).getDescribe();
+                        
+            //get this objects child relationship types
+            List<Schema.ChildRelationship> childRelationships = objectDescribe.getChildRelationships();
+    
+            system.debug('\n\n\n-------------------- ' + objectDescribe.getName() + ' has ' + childRelationships.size() + ' child relationships');
+            
+            //then have to iterate over every child relationship type, and every record of that type and clone them as well. 
+            for(Schema.ChildRelationship thisRelationship : childRelationships)
+            { 
+                          
+                Schema.DescribeSObjectResult childObjectDescribe = thisRelationship.getChildSObject().getDescribe();
+                string relationshipField = thisRelationship.getField().getDescribe().getName();
+                
+                try
+                {
+                    system.debug('\n\n\n-------------------- Looking at ' + childObjectDescribe.getName() + ' which is a child object of ' + objectDescribe.getName());
+                    
+                    if(!specificObjectsToClone.isEmpty() && !specificObjectsToClone.contains(childObjectDescribe.getName()))
+                    {
+                        system.debug('-------------------- Cloning of only specific objects is enabled and this object is not defined in the list. Skipping clone.');
+                        continue;                    
+                    } 
+                    
+                    if(!childObjectDescribe.isCreateable() || !childObjectDescribe.isQueryable() || !childObjectDescribe.isAccessible())
+                    {
+                        system.debug('-------------------- Object is not one of the following: queryable, creatable or accessible. Skipping attempting to clone this object');
+                        continue;
+                    }
+                    if(onlyCloneCustomObjects && !childObjectDescribe.isCustom())
+                    {
+                        system.debug('-------------------- Object is not custom and custom object only clone is on. Skipping this object.');
+                        continue;                   
+                    }
+                    if(Limits.getQueries() >= Limits.getLimitQueries())
+                    {
+                        system.debug('\n\n\n-------------------- Governor limits hit. Must abort.');
+                        
+                        //if we hit an error, and this is an all or nothing job, we have to delete what we created and abort
+                        if(!allOrNothing)
+                        {
+                            cleanUpError();
+                        }
+                        return allCreatedObjects;
+                    }
+                    //create a select all query from the child object type
+                    string childDataQuery = buildSelectAllStatment(childObjectDescribe.getName());
+                    
+                    //add a where condition that will only find records that are related to this record. The field which the relationship is defined is stored in the maps value
+                    childDataQuery+= ' where '+relationshipField+ ' in :objectIds';
+                    
+                    //get the details of this object
+                    list<sObject> childObjectsWithData = database.query(childDataQuery);
+                    
+                    system.debug('\n\n\n-------------------- Object queried. Found ' + childObjectsWithData.size() + ' records to clone');
+                    
+                    if(!childObjectsWithData.isEmpty())
+                    {               
+                        map<id,id> childRecordSourceToClone = new map<id,id>();
+                        
+                        for(sObject thisChildObject : childObjectsWithData)
+                        {
+                            childRecordSourceToClone.put(thisChildObject.Id,null);
+                            
+                            //clone the object
+                            sObject newClone = thisChildObject.clone();
+                            
+                            //now if there are any fields we need to change on the clones do that now. Look in the map for this object type.
+                            if(clonedObjectFieldAdjustments != null && clonedObjectFieldAdjustments.containsKey(childObjectDescribe.getName()))
+                            {
+                                //get all the fields that need to be changed.
+                                map<string,string> objectFieldChanges = new map<string,string>();
+                                
+                                //iterate over every field in the map and attempt to write it's value to the object.
+                                for(string thisField : objectFieldChanges.keySet())
+                                {
+                                    try
+                                    {
+                                        newClone.put(thisField,objectFieldChanges.get(thisField));
+                                    }
+                                    catch(exception e)
+                                    {
+                                        system.debug('\n\n\n\n----- Unable to write value: ' + objectFieldChanges.get(thisField) + ' to field ' + thisField + ' on object ' + childObjectDescribe.getName());
+                                        system.debug(e.getMessage());
+                                    }
+                                }
+                            }
+                            //since the record we cloned still has the original parent id, we now need to update the clone with the id of it's cloned parent.
+                            //to do that we reference the map we created above and use it to get the new cloned parent.                        
+                            system.debug('\n\n\n----------- Attempting to change parent of clone....');
+                            id newParentId = sourceToCloneMap.get((id) thisChildObject.get(relationshipField));
+                            
+                            system.debug('Old Parent: ' + thisChildObject.get(relationshipField) + ' new parent ' + newParentId);
+                            
+                            //write the new parent value into the record
+                            newClone.put(thisRelationship.getField().getDescribe().getName(),newParentId );
+                            
+                            //add this new clone to the list. It will be inserted once the deepClone function is called again. I know it's a little odd to not just insert them now
+                            //but it save on redudent logic in the long run.
+                            newClones.add(newClone);             
+                        }  
+                        cloneData thisCloneData = new cloneData(newClones,childRecordSourceToClone);
+                        nextInvocationCloneMap.put(childObjectDescribe.getName(),thisCloneData);                             
+                    }                                       
+                       
+                }
+                catch(exception e)
+                {
+                    system.debug('\n\n\n---------------------- Error attempting to clone child records of type: ' + childObjectDescribe.getName());
+                    system.debug(e); 
+                    if(allOrNothing)
+                    {
+                        cleanUpError();
+                    }
+                }            
+            }          
+        }
+        
+        system.debug('\n\n\n-------------------- Done iterating cloneable objects.');
+        
+        system.debug('\n\n\n-------------------- Clone Map below');
+        system.debug(nextInvocationCloneMap);
+        
+        system.debug('\n\n\n-------------------- All created object ids thus far across this invocation');
+        system.debug(allCreatedObjects);
+        
+        //if our map is not empty that means we have more records to clone. So queue up the next job.
+        if(!nextInvocationCloneMap.isEmpty())
+        {
+            system.debug('\n\n\n-------------------- Clone map is not empty. Sending objects to be cloned to another job');
+            
+            deepClone nextIteration = new deepClone();
+            nextIteration.thisInvocationCloneMap = nextInvocationCloneMap;
+            nextIteration.allCreatedObjects = allCreatedObjects;
+            nextIteration.onlyCloneCustomObjects  = onlyCloneCustomObjects;
+            nextIteration.allOrNothing = allOrNothing;
+            nextIteration.callback = callback;
+            nextIteration.rootRecordId = rootRecordId;
+            nextIteration.sessionId = sessionId;
+            nextIteration.clonedObjectFieldAdjustments  = clonedObjectFieldAdjustments;
+            
+            if(!Test.isRunningTest())
+            {
+                id  jobId = System.enqueueJob(nextIteration);       
+            
+                system.debug('\n\n\n-------------------- Next queable job scheduled. Id is: ' + jobId);  
+            }
+            else
+            {
+                system.debug('\n\n\n-------------------- Chaining of queable jobs not supported in apex tests. Recursive deep clone is not possible to test');
+            }
+            
+        }
+        else if(callback != null)
+        {
+            invokeCallback(callback, rootRecordId, allCreatedObjects, true, sessionId);
+        }
+        
+        system.debug('\n\n\n-------------------- Cloning Done!');
+        
+        return allCreatedObjects;
+    }
+    
+    /**
+    * @description will allow for a 'callback' function to be specified by the caller which will be invoked and passed in the ids of all the created objects. This org does not have the tooling api enabled.
+    */
+    @future(callout=true)
+    public static void invokeCallback(string callback, id rootRecordId, list<string> allCreatedObjects, boolean success, string sessionId)
+    {
+        HttpResponse res = new HttpResponse();
+        try
+        {
+            system.debug('\n\n\n------------ Invoking callback function with sessionId: ' + sessionId);
+            
+            string functionCall = callback+'(\''+rootRecordId+'\',\''+String.join(allCreatedObjects,',')+'\',\''+userinfo.getUserId()+'\','+success+');';
+            
+            system.debug('\n\n\n\n--------- Function call string');
+            system.debug(functionCall);
+            
+            HttpRequest req = new HttpRequest();
+            req.setHeader('Authorization', 'Bearer ' + sessionId);
+            req.setHeader('Content-Type', 'application/json');
+            string instanceURL = System.URL.getSalesforceBaseUrl().getHost().remove('-api' ).toLowerCase();
+            String toolingendpoint = 'https://'+instanceURL+'/services/data/v28.0/tooling/executeAnonymous/?anonymousBody='+encodingUtil.urlEncode(functionCall,'utf-8');
+            req.setEndpoint(toolingendpoint);
+            req.setMethod('GET');
+            
+            system.debug(req);
+            
+            Http h = new Http();
+            
+            //there is no way to test the actual invoking on a test class because the hack to do so requires calling out to a webservice
+            //which is not allowed in a test class. Just have to trust that it works.
+            if(!Test.isRunningTest())
+            {
+                res = h.send(req);   
+                system.debug(res);         
+            }
+        }
+        catch(exception e)
+        {
+            system.debug('\n\n\n\n--------------------- Error attempting callback!');
+            system.debug(e);
+            system.debug(res);
+        }
+    } 
+    /**
+    * @description create a string which is a select statement for the given object type that will select all fields. Equivalent to Select * from objectName ins SQL
+    * @param objectName the API name of the object which to build a query string for
+    * @return string a string containing the SELECT keyword, all the fields on the specified object and the FROM clause to specify that object type. You may add your own where statements after.
+    **/
+    public string buildSelectAllStatment(string objectName){ return buildSelectAllStatment(objectName, new list<string>());}
+    public string buildSelectAllStatment(string objectName, list<string> extraFields)
+    {       
+        // Initialize setup variables
+        String query = 'SELECT ';
+        String objectFields = String.Join(new list<string>(globalDescribeMap.get(objectName).getDescribe().fields.getMap().keySet()),',');
+        if(extraFields != null)
+        {
+            objectFields += ','+String.Join(extraFields,',');
+        }
+        
+        objectFields = objectFields.removeEnd(',');
+        
+        query += objectFields;
+    
+        // Add FROM statement
+        query += ' FROM ' + objectName;
+                 
+        return query;   
+    }    
+    
+    public void cleanUpError()
+    {
+        system.debug('\n\n\n-------------------- Got Request to cleanup/delete records! Deleting ' + allCreatedObjects.size() + ' records');
+        
+        database.delete(allCreatedObjects);
+    }
+    
+    public class cloneData
+    {
+        public list<sObject> objectsToClone = new list<sObject>();        
+        public map<id,id> previousSourceToCloneMap = new map<id,id>();  
+        
+        public cloneData(list<sObject> objects, map<id,id> previousDataMap)
+        {
+            this.objectsToClone = objects;
+            this.previousSourceToCloneMap = previousDataMap;
+        }   
+    }    
+    
+
+
+}

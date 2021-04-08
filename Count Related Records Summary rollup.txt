@@ -1,0 +1,101 @@
+public class FinancialAccountTriggerHandler
+{
+    
+    public static void afterInsertHandler(map<Id,Financial_Account__c> finAccounts)
+    {
+        list<account> relatedAccountsToUpdate = calcRelatedAccountTotals(finAccounts.values(), null);
+
+        update relatedAccountsToUpdate;
+    }
+
+    public static void afterUpdateHandler(map<Id,Financial_Account__c> finAccounts, map<Id,Financial_Account__c> finAccountsOld)
+    {
+        list<account> relatedAccountsToUpdate = calcRelatedAccountTotals(finAccounts.values(), finAccountsOld);
+    
+        update relatedAccountsToUpdate;
+    }
+    
+    public static void afterDeleteHandler(map<Id,Financial_Account__c> finAccountsOld)
+    {
+        list<account> relatedAccountsToUpdate = calcRelatedAccountTotals(finAccountsOld.values(), null);
+    
+        update relatedAccountsToUpdate;
+    }
+
+    public static void afterUnDeleteHandler(map<Id,Financial_Account__c> finAccounts)
+    {
+        list<account> relatedAccountsToUpdate = calcRelatedAccountTotals(finAccounts.values(), null);
+    
+        update relatedAccountsToUpdate;
+    }
+    
+    /*
+    * @Description Method for calculating various totals on a financial accounts related account (via Consultant_Firm__c lookup field). 
+    * @Param finAccounts list of financial accounts to evaluate
+    * @Param finAccountsOld map of previous financial account values to compare against during update. Use null for any trigger context besides update
+    * @Return list of all accounts with their new total fields set
+    */             
+    public static list<Account> calcRelatedAccountTotals(list<Financial_Account__c> finAccounts, map<Id,Financial_Account__c> finAccountsOld)
+    {
+        //use utility method to find any financial accounts with changed Consultant_Firm__c values. Will return matches for any record that doesn't have a matching old record.
+        list<Financial_Account__c> financialAccountsToRecalcFor = Utilities.getObjectsWithChangedFieldValue(finAccounts,finAccountsOld,'Consultant_Firm__c');
+        
+        //also need to include any financial accounts where the status__c has changed.
+        financialAccountsToRecalcFor.addAll( (list<Financial_Account__c> ) Utilities.getObjectsWithChangedFieldValue(finAccounts,finAccountsOld,'status__c');
+        set<id> relationshipAccounts = new set<id>();
+ 
+        //loop over every financial account who's related account we need to update totals for and add that account to the list which will be the where condition for the aggregate query.
+        for(Financial_Account__c thisAccount : accountsWithChangedConsultantRelationship)
+        {
+            if(thisAccount.Consultant_Firm__c != null)
+            {
+                relationshipAccounts.add(thisAccount.Consultant_Firm__c);
+            }
+            //we also need to get the old relationship account id because if this financial account is moving from one account to another the old accounts values
+            //will need to be updated (losing this financial accounts totals) as well as the new account (gaining this financial accounts totals)
+            if(finAccountsOld != null && finAccountsOld.containsKey(thisAccount.Id) && finAccountsOld.get(thisAccount.Id).Consultant_Firm__c != null)
+            {
+                relationshipAccounts.add(finAccountsOld.get(thisAccount.Id).Consultant_Firm__c);
+            }
+        }
+        
+        //map of account id to account records to update. Not using a list because we don't want duplicate values in the list.       
+        Map<Id,Account> updateAccounts =  new Map<Id,Account>();
+        
+        //use aggregate query to sum the various fields we want. Group the result set by the account id. Remember aggregate queries will only return rows for accounts that have
+        //values for their sum fields. 
+        list<AggregateResult> accountsWithMarketValuesByRelationship = [select 
+                                                                            Sum(Market_Value__c) marketValue, 
+                                                                            Count(Id) numAccounts,
+                                                                            Consultant_Firm__c
+                                                                        from Financial_Account__c 
+                                                                        where Consultant_Firm__c in :relationshipAccounts
+                                                                        and status__c = 'Active' 
+                                                                        group by Consultant_Firm__c];
+        
+        //the only issue with using aggregate results to set the totals for an account is that if there are no records for it, it isn't returned in the data set. So say for example the last financial account
+        //for an account is moved to another financial account. The old account because it has no financial accounts related to it would not show up in the aggregate result. That means that unless we do something
+        //to detect that, the account would retain its old totals and not be updated. So we have to make sure that every account in the relationshipAccounts id set is accounted for. 
+        //the default values set here will be overridden if there are values from the aggregate result query since they are being stored in a map keyed by the account id.
+        for(Id thisAccountId : relationshipAccounts)
+        {
+            if(thisAccountId == null) continue;
+            Account thisAccount = new Account(Id= thisAccountId);
+            thisAccount.Total_Market_Value_as_Consultant__c = 0;
+            thisAccount.of_Active_Fin_Accounts_Consultant__c = 0;
+            updateAccounts.put(thisAccount.Id,thisAccount);
+        }
+                
+        for(AggregateResult thisResult : accountsWithMarketValuesByRelationship)
+        {
+            if(thisResult.get('Consultant_Firm__c') == null) continue;
+            Account thisAccount = new Account(Id= (id) thisResult.get('Consultant_Firm__c'));
+            thisAccount.Total_Market_Value_as_Consultant__c = (double) thisResult.get('marketValue');
+            thisAccount.of_Active_Fin_Accounts_Consultant__c = (double) thisResult.get('numAccounts');
+            updateAccounts.put(thisAccount.Id,thisAccount);
+        }
+
+        return updateAccounts.values();
+    }
+    
+}

@@ -1,0 +1,58 @@
+public static map<id,sObject> getAllSobjectData(list<id> objectIds)
+{
+	map<id,sObject> results = new map<id,sObject>();
+	try
+	{
+		if(objectIds == null || objectIds.isEmpty()) return results;
+		if(objectIds[0] == null) throw new applicationException('First entry of objectId list may not be null. Must contain a value to determine object id list type');
+		String objectApiName = objectIds[0].getSObjectType().getDescribe().getName();
+
+		string queryString = 'Select ' + String.join(getSobjectFields(objectApiName),',') + ' from '+objectApiName+' where id in :objectIds ';
+
+		results = new map<id,sObject> ( database.query(queryString) );
+	}
+	catch(exception e)
+	{
+		handleError(e);
+	}
+	return results;
+}
+
+public static list<string> getSobjectFields(string objectName)
+{
+	list<string> sObjectFields = new list<string>();
+
+	try
+	{
+		if(objectName == null) return sObjectFields;
+
+		Map<String, Schema.SObjectType> globalDescribe = Schema.getGlobalDescribe();
+
+		if(!globalDescribe.containsKey(objectName)) throw new applicationException('Invalid sObject name: ' + objectName + '. Object does not exist or is not accessible.');
+
+		Map<String, Schema.SObjectField> objectFields = globalDescribe.get(objectName).getDescribe().fields.getMap();
+
+		for(string thisField : objectFields.keySet())
+		{
+			//sObjectFields.add(thisField);
+
+			if(objectFields.get(thisField).getDescribe().isAccessible())
+			{
+				sObjectFields.add(thisField);
+			}
+
+		}
+	}
+	catch(exception e)
+	{
+		handleError(e);
+	}
+	return sObjectFields;
+}
+
+public void handleError(exception e)
+{
+	system.debug('\n\n\n------ ERROR!!');
+	system.debug(e.getMessage() + ' on line ' + e.getLineNumber());
+}
+public class applicationException extends Exception {}

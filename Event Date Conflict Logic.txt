@@ -1,0 +1,53 @@
+Possible Event Conflict Types
+
+
+1) An existing event starts before your event starts and ends after your event ends (your event is inside the existing event)
+
+
+|-----------| (Existing event)
+  |----|      (New Event)
+
+WHERE Event.StartDateTime <= :thisEvent.StartDateTime and Event.EndDateTime >=:thisEvent.EndDateTime (TRUE)
+WHERE Event.StartDateTime <= :thisEvent.EndDateTime and Event.EndDateTime >=:thisEvent.StartDateTime (TRUE)
+
+2) An existing event starts before your event starts and ends after your event starts (overlap the beginning of the new event)
+
+
+|--------|      (Existing Event)
+    |---------| (New Event)
+
+
+WHERE Event.StartDateTime <= :thisEvent.StartDateTime and Event.EndDateTime >=:thisEvent.StartDateTime (TRUE)
+WHERE Event.StartDateTime <= :thisEvent.EndDateTime and Event.EndDateTime >=:thisEvent.StartDateTime (TRUE)
+
+3) An existing event starts before your event ends and ends after your event ends (overlap the end of the new event)
+
+     |--------| (Existing Event)
+|---------|     (New Event)
+
+
+WHERE Event.StartDateTime >= :thisEvent.StartDateTime and Event.StartDateTime <=:thisEvent.EndDateTime (TRUE)
+WHERE Event.StartDateTime <= :thisEvent.EndDateTime and Event.EndDateTime >=:thisEvent.StartDateTime (TRUE)
+
+4) An existing event starts after your event starts and ends before your event ends (the existing event is inside the new event)
+
+  |----|    (Existing Event)
+|---------| (New Event)
+
+
+WHERE Event.StartDateTime >= :thisEvent.StartDateTime and Event.EndDateTime <=:thisEvent.EndDateTime
+WHERE Event.StartDateTime <= :thisEvent.EndDateTime and Event.EndDateTime >=:thisEvent.StartDateTime (TRUE)
+
+So when combined it becomes
+
+WHERE ((Event.StartDateTime <= :thisEvent.StartDateTime and Event.EndDateTime >=:thisEvent.EndDateTime) OR 
+       (Event.StartDateTime <= :thisEvent.StartDateTime and Event.EndDateTime >=:thisEvent.StartDateTime) OR 
+       (Event.StartDateTime >= :thisEvent.StartDateTime and Event.StartDateTime <=:thisEvent.EndDateTime) OR 
+       (Event.StartDateTime >= :thisEvent.StartDateTime and Event.EndDateTime <=:thisEvent.EndDateTime) )
+
+
+WHERE Event.StartDateTime <= :thisEvent.EndDateTime and Event.EndDateTime >=:thisEvent.StartDateTime
+
+
+Add relationship extension
+Add scheduleConflictDetection

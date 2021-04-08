@@ -1,0 +1,377 @@
+/**
+* Description: Generates a JSON payload with all record data and emails it to you. You can then take that record data and put it in a static resource. That static resource can then
+* be imported to generate configuration data. All relationship fields are automatically updated. Object names must be passed in order that they need to be created in
+* To use simply feed the createImportableDataFile(set<string> objectTypes) a set of object names. Then when you receive the email (it goes to whatever your current users email address is)
+* you can then put that into the static resource. Then run importDataFromStaticResource(string resourceName, id newOwnerId, set<string> objectImportOrder) to import your data. All relationships
+* should be automatically updated and bad field data should be discarded automatically as well. Useful for configuring a new org that uses lots of custom records to control application behavior and such.
+* should not be used for MASSIVE data loading as there is an insert within a loop and more than 200 records per object type may cause errors.
+**/    
+
+     /**
+    * @Description 'Underloaded' (is that a term?) version of the createImportableDataFile that takes no arguments and instead uses the settings from the Envestnet_Settings__c object
+    *               to figure out what objects to create data for and what to name the file. Make sure Objects_To_Import_From_Resource__c and Static_Resource_Import_Config_Name__c are set in the
+    *               Envestnet_Settings__c custom setting before running this. See the full createImportableDataFile() method for more details.
+    * @Return map of sObject names to the included records. Will contain every field for every record of every object type requested so be careful in your requests..
+    **/
+    global static map<string, list<sobject>> createImportableDataFile(){
+        return createImportableDataFile(Utilities.getNamespace());
+    }
+    global static map<string, list<sobject>> createImportableDataFile(string namespace)
+    {
+        Envestnet_Settings__c settings = Envestnet_Settings__c.getOrgDefaults();
+        string importFilename = settings.Static_Resource_Import_Config_Name__c;
+        string importableObjects = settings.Objects_To_Import_From_Resource__c;
+        set<string> objectsToGenerateImportFor = new set<string>(importableObjects.split(','));
+        return createImportableDataFile(objectsToGenerateImportFor, importFilename, namespace);
+    }
+
+    /**
+    * @Description part of the install script that creates all the default mappings by importing the data from the static resource defined by the
+    *              Envestnet_Settings__c.Static_Resource_Import_Config_Name__c field in the order defined by the Envestnet_Settings__c.Objects_To_Import_From_Resource__c field
+    * @Param isFsc flag that controls if this is a financial services enabled org or not. Can be deduced by the Utilities.isFinancialServicesCloudInstalled() method.
+    * @Return void
+    **/
+    global static map<String,list<sobject>> createDefaultMappings( Boolean isFsc, boolean verifyOnly){
+        Envestnet_Settings__c settings = Envestnet_Settings__c.getOrgDefaults();
+        string importFilename = settings.Static_Resource_Import_Config_Name__c;
+        string importableObjects = settings.Objects_To_Import_From_Resource__c;
+        set<string> objectsToGenerateImportFor = new set<string>(importableObjects.split(','));
+
+        system.debug('\n\n\n----- Beginning create of default mappings. Reading JSON from static resource ' + importFilename + ' and importing object data for objects ' + objectsToGenerateImportFor);
+        map<String,list<sobject>> importResult = InstallScript.importDataFromStaticResource(importFilename,null,objectsToGenerateImportFor,verifyOnly);
+
+        system.debug('\n\n\n----- Import complete. Results below');
+        system.debug(json.serialize(importResult));
+
+        return importResult;
+    }
+
+    /**
+    * @Description Exports all records for the given sObjects encoded in JSON and included as an email attachment which is sent to the running users email. This file is meant to
+    *              be used to create a static resource file which can then be imported using importDataFromStaticResource(). Simply call this method with all the objects you need
+    *              to call the importDataFromStaticResource() method with the proper parameters. Your data will be imported and relationships automatically updated. The current running
+    *              user will receive an email with the file that can be set as the static resource.
+    * @Param objectTypes set of API names for sObjects which you want to export/import data for.
+    * @Param fileName the name of the resulting email file attachment. Not very important since the static resource name is the only thing that matters but can help remind user where to put it.
+    * @Return map of sObject names to the included records. Will contain every field for every record of every object type requested so be careful in your requests.
+    * @TODO Possible use the metadata API wrapper to automatically create/update static resource. May be more work than its worth but current method seems a little hacky. Shrug.
+    **/
+    private static map<string, list<sobject>> createImportableDataFile(set<string> objectTypes, string fileName, string namespace)
+    {
+        Envestnet_Settings__c settings = Envestnet_Settings__c.getOrgDefaults();
+        string importFilename = settings.Static_Resource_Import_Config_Name__c;
+        map<string, list<sobject>> objectNameToImportJsonString = new map<string,list<sobject>>();
+        fileName = fileName != null ? fileName : 'use_me_as_a';
+        for(string objectName : objectTypes)
+        {
+            string objectDataQueryString = buildSelectAllQuery(objectName);
+
+            list<sObject> objectData = database.query(objectDataQueryString);
+
+            objectName = namespace != null ? namespace+''+objectName : objectName;
+
+            objectNameToImportJsonString.put(objectName,objectData);
+        }
+
+        string jsonString = JSON.serialize(objectNameToImportJsonString);
+        if(namespace != null && !jsonString.contains(namespace)) jsonString = addNamespaceToJsonString(jsonString, namespace);
+        string emailBody = 'Your generated static resource text file is attached. This can be imported by importDataFromStaticResource automatically create data. Simply upload the contents of this file into the '+importFilename+' static resource, then run the mentioned method in the developer console/execute anonymous.';
+        Messaging.SendEmailResult[] emailResult = sendEmailAttachment('Your Importable Salesforce Data', emailBody, fileName+'_static_resource.txt', jsonString) ;
+
+
+        return objectNameToImportJsonString;
+    }
+
+    public static string addNamespaceToJsonString(string jsonString, string namespace)
+    {
+        string regex = '"([^"]*)__c"';
+        Pattern regexPattern = Pattern.compile(regex);
+        Matcher regexMatcher = regexPattern.matcher(jsonString);
+
+        while(regexMatcher.find())
+        {
+            //only add namespace if it doesn't exist.
+            if(!regexMatcher.group().startsWith('"'+namespace))
+            {
+                //preappend the namespace. Because the regex is a little off we have to do some extra string manipulation as well.
+                jsonString = jsonString.replace(regexMatcher.group(), '"'+nameSpace+''+regexMatcher.group(1)+'__c"');
+            }
+        }
+        return jsonString;
+    }
+
+    private static string removeNamespaceFromJsonString(string jsonString)
+    {
+        string regex = '"[a-z]*__';
+        Pattern regexPattern = Pattern.compile(regex);
+        Matcher regexMatcher = regexPattern.matcher(jsonString);
+
+        while(regexMatcher.find())
+        {
+            //Get rid of namespace string from JSON using replace
+            jsonString = jsonString.replace(regexMatcher.group(), '');
+
+        }
+        return jsonString;
+    }
+    /**
+    * @Description method for importing configuration data from a static resource. The resource should contain JSON data as generated by the createImportableDataFile method which contains a
+    *              JSON encoded map of sObject names to a list of sObjects. All relationship fields that relate one sObject to another through a relationship field will attempt to be updated
+    *              and if a value cannot be found the field will be cleared. For example if your JSON contains an account, on insert it's ID will be replaced obviously. This new Id is recorded
+    *              and any other record that references that Id will automatically be updated with the new one. This keeps all relationships intact automatically. Current running user will
+    *              recieve an email with import results.
+    * @Param resourceName the name of the static resource that contains the JSON. It should be a single text file containing only the JSON and nothing else.
+    * @Param newOwnerId if you wish to assign the newly created records a specific ownerId you may specify it here. Otherwise the current user id will be used.
+    * @Param objectImportOrder a set that contains IN ORDER which objects from the data file to import. Because the generate JSON may not have the proper order of objects (ex contact records
+    *        may come before account records in the file) this variable tells the method in which order to process records. Any parent records must be created before any related children.
+    * @Param verifyOnly sets a database savepoint and rollback. Use this to verify that your import file is proper and that the import will run without issues.  Then when ready you can turn
+    *        this flag to false to actually perform the update.
+    * @Return a map of the sObject type to the list of objects created. This is populated regardless of verifyOnly so test methods and such can see what would have been created.
+    **/
+    private static map<String,list<sobject>> importDataFromStaticResource(string resourceName, id newOwnerId, set<string> objectImportOrder, boolean verifyOnly)
+    {
+
+
+        string emailBodyString = 'Import process completed successfully! Created record data is attached';
+        //if doing verify only run, we need to be able to rollback.
+        ErrorLog log = new ErrorLog( 'InstallScript.importDataFromStaticResource' );
+        Savepoint sp = Database.setSavepoint();
+        map<String,list<sobject>> createdObjectsMap = new map<string,list<sObject>>();
+        list<string> emailLogItems = new list<string>();
+        if(verifyOnly) emailLogItems.add('Running in verify only mode. All changes will be rolled back!');
+        emailLogItems.add('Import process starting');
+        string namespace = Utilities.getNamespace();
+        try
+        {
+            string body = readStaticResource(resourceName);
+
+            if(body == null )
+            {
+                emailLogItems.add('No static with name ' + resourceName + ' could be found, or resource is null. Aborting');
+                system.debug('No static with name ' + resourceName + ' could be found, or resource is null. Aborting');
+                return createdObjectsMap;
+            }
+
+            //if this org has a namespace but the importable json doesnt have that namespace included add it now.
+            if(!String.isEmpty(namespace) && !body.contains(namespace))
+            {
+                system.debug('\n\n\n------ Adding namespace: ' + namespace + ' to json file. Only required changes will be made.');
+                body = addNamespaceToJsonString(body, namespace);
+
+                system.debug(body);
+            }
+            //otherwise if this org does not have a namespace then any namespace data from the file.
+            else if(String.isEmpty(namespace))
+            {
+                //body = removeNamespaceFromJsonString(body);
+            }
+
+            Map<String,list<sObject>> deserializedData = (Map<string,list<Sobject>>) JSON.deserialize(body, Map<string,list<Sobject>>.class);
+            id ownerId = newOwnerId != null ? newOwnerId : userInfo.getUserId();
+            Map<String, Schema.SObjectType> gd = Schema.getGlobalDescribe();
+
+            //the old objects will come with Ids. For top level objects thats fine, we can just wipe those. However for objects that have relationships to their parents
+            //(like contact->account) we need a way to replace the old ids with the new ones wherever they are referenced. So we construct a map that olds the old Id to the new
+            //id then every time we loop over an object we find any reference field, check its current id value and see if our map has an entry for it. If so we replace it. Of course
+            //to populate the map we need to track the objects current id and what its new id is after insert so we can do that replace. To do that we use a list which we can
+            //track by index position so the insert statment can find what the old Id was to then update the map with the new one.
+            map<Id,Id> oldIdToNewIdMap = new map<Id,Id>();
+
+
+            //because we need to import these values in the order specified by the user we have to loop over them this way instead of just using the keyset of the deserialized data.
+            for(string sObjectType : objectImportOrder)
+            {
+                emailLogItems.add('Beginning processing of ' + sObjectType + ' records');
+
+                //make sure the object they are trying to import exists in the org, and that there is data for it within the import file.
+                if(!gd.containsKey(sObjectType))
+                {
+                    emailLogItems.add('No sObject with name ' + sObjectType + ' exists in this org. Skipping.');
+                    continue;
+                }
+                if(!deserializedData.containsKey(sObjectType))
+                {
+                    emailLogItems.add('No data for object ' + sObjectType + ' exists in the import data. Skipping.');
+                    continue;
+                }
+
+                //list we can reference by index position to both set and get the old Id.
+                list<string> oldObjectIdList = new list<string>();
+
+                //trying to insert the parsed object from the source JSON errors due to fields like createdBy and such having values. So we clone the object and add it which works better.
+                list<sObject> objectsToInsert = new list<sObject>();
+                //logic to cast the generic sObject list we get from the map into whatever object type its actually supposed to be
+                String listType = 'List<' + sObjectType + '>';
+                List<SObject> castRecords = (List<SObject>) Type.forName(listType).newInstance();
+
+                //record this objects id in the list and then create a clone of it so that we can modify it as needed. If we didn't clone it we'd get errors about
+                //not being able to set master-detail fields and such because the system would treat it as an existing sObject instead of a new one like it actually is.
+                //kind of a goofy work around, but it does the job.
+                for(sObject thisObject : deserializedData.get(sObjectType))
+                {
+                    oldObjectIdList.add((string) thisObject.get('Id'));
+                    castRecords.add(thisObject.clone());
+                }
+
+                emailLogItems.add('Found ' + castRecords.size() + ' records to import. Beginning relationship Id replacment');
+                //get describe information for this object type
+                DescribeSObjectResult res = Schema.getGlobalDescribe().get(sObjectType).getDescribe();
+                Map<String,Schema.SObjectField> fields = res.fields.getMap();
+
+                //Some field manipulation logic here. Change the owner Id, clear the objects old Id (from whatever org it originally came from)
+                //and then replace and references to old ids that we have stored in the map so far. For any field we can't write to just skip over it.
+                for(sObject thisObject : castRecords)
+                {
+                    //loop over every field so we can check and make sure its valid to write to AND replace and old ID values with the new ones.
+                    for( Schema.SObjectField thisField : fields.values() )
+                    {
+                        Schema.DescribeFieldResult fieldDescribe = thisField.getDescribe();
+                        if(fieldDescribe.isCreateable() && fieldDescribe.getType().name() == 'REFERENCE')
+                        {
+                            //system.debug('\n\n\n--------- Found lookup field. Attempting to replace with new value!');
+
+                            string oldValue = (string) thisObject.get(fieldDescribe.getName());
+                            try
+                            {
+                                if(oldIdToNewIdMap.containsKey(oldValue))
+                                {
+                                    thisObject.put(fieldDescribe.getName(),oldIdToNewIdMap.get(oldValue));
+                                }
+                                else
+                                {
+                                    //system.debug('\n\n\n------- No replacement value for id: ' + oldValue + ' could be found. Since ID is almost definitly not in this org setting to null');
+                                    thisObject.put(fieldDescribe.getName(),null);
+                                }
+                            }
+                            catch(exception e)
+                            {
+                                emailLogItems.add('Unable to replace field value. Field may be read only or for some other reason be inaccessible' + e.getMessage());
+                                log.addLog( 'reference field updates',  e.getMessage() );
+                            }
+                        }
+                    }
+
+                    //change the owner id to the one provided (or the current user if one is not provided)
+                    if(fields.containsKey('OwnerId')) thisObject.put('OwnerId', ownerId);
+
+                    objectsToInsert.add(thisObject);
+                }
+                emailLogItems.add('Replacement and field updating complete. Preparing for insert');
+
+
+                system.debug('\n\n\n-------- Inserting ' + objectsToInsert.size() + ' ' + sObjectType + ' records');
+                //these next few lines are a dirty hack to get around a strange error that the runtime has with inserting lists created from json. In a future release we should be able to just
+                //insert the objectsToInsert directly.
+                string dirtyHack = json.serialize(objectsToInsert);
+                list<sObject> workaroundObjectList = new list<sObject>();
+                workaroundObjectList.addAll((List<sObject>) json.deserialize(dirtyHack , list<sObject>.class));
+                //end hack
+
+                list<database.saveResult> saveResults = database.Insert(workaroundObjectList);
+
+                emailLogItems.add('Records imported successfully');
+                //reset the counter
+                integer counter = 0;
+                for(database.saveResult thisResult : saveResults)
+                {
+                    //update the map with the new ids of the objects so other objects know what their new relationship fields should be
+                    oldIdToNewIdMap.put(oldObjectIdList[counter],thisResult.Id);
+                    counter++;
+                }
+
+                //store all the created results in the map.
+                createdObjectsMap.put(sObjectType,objectsToInsert);
+            }
+
+            if(verifyOnly)
+            {
+                emailLogItems.add('Verify only run. Rolling back database changes.');
+                Database.rollback(sp);
+            }
+
+        }
+        catch(exception e)
+        {
+            emailBodyString = 'Error occured during import. ' + e.getMessage() + ' on line ' + e.getLineNumber() + '. All database changes were rolled back. Any successfully created before rollback will be in the attached file';
+            system.debug(emailBodyString);
+            log.addLog(emailBodyString,  e.getMessage() );
+            Database.rollback(sp);
+        }
+
+
+        emailBodyString = emailBodyString + '\n' + String.join(emailLogItems,'\n');
+        Messaging.SendEmailResult[] emailResult = sendEmailAttachment('Your Salesforce Import Result', emailBodyString, 'import_results.txt', JSON.serializePretty(createdObjectsMap));
+
+        log.flush();
+
+        return createdObjectsMap;
+    }
+
+    /**
+    * @Description Sends a single email with an attachment to the current running users email.
+    * @Param subject the subject line of the email
+    * @Param emailBody the body of the email
+    * @Param attachmentName what to name the attachment file. If null attachment is not created/sent
+    * @param attachmentData the data to contain in the attachment. If null attachment is not created/sent.
+    * @Return list of sendEmailResults. Will only contain one record.
+    **/
+    private static Messaging.SendEmailResult[] sendEmailAttachment(string subject, string emailBody, string attachmentName, string attachmentData)
+    {
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        String[] toAddresses = new String[]{UserInfo.getUserEmail()};
+
+        mail.setToAddresses(toAddresses);
+        mail.setSenderDisplayName('Salesforce Importable JSON Static Resource Bot');
+        mail.setSubject(subject);
+        mail.setBccSender(false);
+        mail.setUseSignature(false);
+        mail.setPlainTextBody(emailBody);
+
+        //Set email file attachments
+        if(attachmentName != null && attachmentData != null)
+        {
+            Messaging.EmailFileAttachment efa = new Messaging.EmailFileAttachment();
+            efa.setBody(Blob.valueOf(attachmentData));
+            efa.setFileName(attachmentName);
+            mail.setFileAttachments(new Messaging.EmailFileAttachment[] {efa});
+        }
+        Messaging.SingleEmailMessage[] emailList = new Messaging.SingleEmailMessage[] {mail};
+        return Messaging.sendEmail(emailList);
+    }
+
+    /**
+    * @Description Builds a SOQL string that will select all fields from the given sObject type.
+    * @Param sObjectName the name of the sObject to build query string for.
+    * @Return Query string that can be fed into database.query() to select all records.
+    **/
+    private static string buildSelectAllQuery(string sObjectName)
+    {
+        DescribeSObjectResult res = Schema.getGlobalDescribe().get(sObjectName).getDescribe();
+        Map<String,Schema.SObjectField> fields = res.fields.getMap();
+        list<string> fieldNames = new list<string>();
+        String fieldList = '';
+        for( Schema.SObjectField thisField : fields.values() )
+        {
+            Schema.DescribeFieldResult fieldDescribe = thisField.getDescribe();
+
+            fieldNames.add(fieldDescribe.getName());
+        }
+        fieldList += string.join(fieldNames,',');
+
+        String qry = 'Select ' + fieldList + ' from ' + sObjectName;
+
+        return qry;
+    }
+
+    /**
+    * @Description reads the body of a static resource and returns it as a string
+    * @Param resourceName name of the static resource to read from. Will error if resource does not exist.
+    * @Return the body of the static resource as a string.
+    **/
+    private static string readStaticResource(string resourceName)
+    {
+        list<StaticResource> staticResourceData = [SELECT Id, SystemModStamp, Body FROM StaticResource WHERE Name = :resourceName LIMIT 1];
+
+        if(!staticResourceData.isEmpty()) return staticResourceData[0].Body.toString();
+        return null;
+    }

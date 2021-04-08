@@ -1,0 +1,378 @@
+global class DeepSync implements Queueable {
+
+    //global describe to hold object describe data for query building and relationship iteration
+    public map<String, Schema.SObjectType> globalDescribeMap = Schema.getGlobalDescribe();
+
+    //each iteration may create records. Record their IDs
+    public list<id> allCreatedObjects = new list<id>();
+
+    //each iteration may delete records. Record their IDs
+    public list<id> allDeletedObjects = new list<id>();  
+
+    //each iteration may update records. Record their IDs
+    public list<id> allUpdatedObjects = new list<id>();   
+
+    //source record used as the template. All its child records will also be treated as templates.
+    public id rootTemplateId;
+    
+    //source target record. Will by sycronoized to the template specified above.
+    public id rootTargetId;
+    
+    //flag to decide if all or nothing DML is applied when performing inserts.
+    public boolean allOrNothingInsert = false;
+    
+    //flag to decide if all or nothing DML is applied when performing updates.
+    public boolean allOrNothingUpdate = false;
+    
+    //should records on the target that do not have a match on the template be deleted?
+    public boolean deleteUnmatchedTargetRecords = true;
+    
+    //should records that exist on the template be created on the target if a match is not found?
+    public boolean createMissingRecords = true;
+    
+    //should records that are found to have a match be updated with values from the template?
+    public boolean updateExistingRecords = true;
+    
+    //should records that are found to have a match be updated from the template regardless of existing values?
+    public boolean overwriteExistingValuesDuringUpdate = false;
+    
+    //fields that should not be updated during sync no matter what. Field names and object names are case sensitive, so be careful!
+    public map<string,set<string>> skipUpdatedFields = new map<string,set<string>>();
+    
+    //should the sync job only process custom objects? Recommended if possible.
+    public boolean onlySyncCustomObjects = true;
+    
+    //map that contains object names to the field to match on.
+    public map<string,string> objectToMatchFieldMap = new map<string,string>();
+    
+    //instead of deleting records that exist on the target and not on the template you may instead specify fields to update. Such as setting an active flag to false.
+    public map<string,map<string,string>> unmatchedRecordFieldUpdates = new map<string,map<string,string>>();
+    
+    public map<id,id> templateToTargetMap = new map<id,id>();
+    
+    public void execute(QueueableContext context) {
+
+        templateToTargetMap.put(rootTemplateId,rootTargetId);
+        
+        deepSyncBatched();
+    }     
+    
+    public void deepSyncBatched(deepSync previousConfig, map<id,id> nextBatchIds)
+    {
+        system.debug('\n\n\n-------------------- Queing up next job with data');
+        system.debug(nextBatchIds);
+        
+        deepSync nextBatch = new deepSync();
+        nextBatch.allOrNothingInsert = previousConfig.allOrNothingInsert;
+        nextBatch.allOrNothingUpdate = previousConfig.allOrNothingUpdate; 
+        nextBatch.deleteUnmatchedTargetRecords = previousConfig.deleteUnmatchedTargetRecords; 
+        nextBatch.createMissingRecords = previousConfig.createMissingRecords;   
+        nextBatch.updateExistingRecords = previousConfig.updateExistingRecords;  
+        nextBatch.overwriteExistingValuesDuringUpdate = previousConfig.overwriteExistingValuesDuringUpdate;  
+        nextBatch.skipUpdatedFields = previousConfig.skipUpdatedFields;  
+        nextBatch.onlySyncCustomObjects = previousConfig.onlySyncCustomObjects;  
+        nextBatch.objectToMatchFieldMap = previousConfig.objectToMatchFieldMap;  
+        nextBatch.unmatchedRecordFieldUpdates = previousConfig.unmatchedRecordFieldUpdates;  
+        nextBatch.templateToTargetMap = nextBatchIds;  
+        
+        id  jobId = System.enqueueJob(nextBatch);
+    }
+    
+    public void deepSyncBatched()
+    {
+        list<sObject> objectsToCreate = new list<sObject>();
+        list<id> objectsToDelete = new list<id>();
+        list<sObject> objectsToUpdate = new list<sObject>();
+        map<id,id> nextBatchTemplateToTargetMap = new map<id,id>();
+        
+        system.debug('\n\n\n----------- Deep Sync Batch Initiated. Syncing records....');
+        system.debug(templateToTargetMap);
+        
+        
+        for(id templateId : templateToTargetMap.keySet())
+        {
+            if(templateId == null) continue; //just incase a null ends up in here somehow?
+            system.debug('\n\n\n----------------- looking at template record ' + templateId);
+            
+            id targetId = templateToTargetMap.get(templateId);            
+            string objectType = templateId.getSObjectType().getDescribe().getName();
+            
+            //Describes this object type so we can deduce it's child relationships
+            Schema.DescribeSObjectResult objectDescribe = globalDescribeMap.get(objectType).getDescribe();
+                        
+            //get this objects child relationship types
+            List<Schema.ChildRelationship> childRelationships = objectDescribe.getChildRelationships();        
+            
+            //then have to iterate over every child relationship type, and every record of that type and clone them as well. 
+            for(Schema.ChildRelationship thisRelationship : childRelationships)
+            {                                          
+                Schema.DescribeSObjectResult childObjectDescribe = thisRelationship.getChildSObject().getDescribe();
+                map<string,schema.sObjectField> childObjectFields = childObjectDescribe.fields.getMap();
+                
+                
+                string relationshipField = thisRelationship.getField().getDescribe().getName();
+                string relationshipObjectName = childObjectDescribe.getName();
+
+                //we now have all the related objects of this type for both the template and the target. Now we need to iterate over them and match them up.                
+                //first off, look at our config object to figure out what field on this object tells us if a record matches it's template. This should have been passed in 
+                //during construction. 
+                string matchField = objectToMatchFieldMap.containsKey(relationshipObjectName) ? objectToMatchFieldMap.get(relationshipObjectName) : null;
+                
+                if(!childObjectDescribe.isCreateable() || !childObjectDescribe.isQueryable() || !childObjectDescribe.isAccessible())
+                {
+                    system.debug('-------------------- Object ' + relationshipObjectName + ' is not one of the following: queryable, creatable or accessible. Skipping attempting to clone this object');
+                    continue;
+                }
+                if(onlySyncCustomObjects && !childObjectDescribe.isCustom())
+                {
+                    system.debug('-------------------- Object ' + relationshipObjectName + ' is not custom and custom object only clone is on. Skipping this object.');
+                    continue;                   
+                }
+                if(matchField == null)
+                {
+                    system.debug('-------------------- No match field specified for object ' + relationshipObjectName + ' sync cannot be performed for this object. Skipping');
+                    continue;                      
+                }
+                if(Limits.getQueries() >= Limits.getLimitQueries())
+                {
+                    system.debug('\n\n\n-------------------- Governor limits hit. Must abort.');
+                    
+                    return;
+                }
+
+                string childDataQuery = buildSelectAllStatment(relationshipObjectName);
+
+                //add a where condition that will only find records that are related to this record. The field which the relationship is defined is stored in the maps value
+                childDataQuery+= ' where ('+relationshipField+ ' = :templateId or '+relationshipField+' = :targetId) and '+relationshipField+' != null';
+                
+                //get the details of this object
+                list<sObject> childObjectsWithData = database.query(childDataQuery);            
+                
+                system.debug('-------------------- Fetched All related records of type ' + relationshipObjectName + ' for ' + templateId + ' and ' + targetId);
+                system.debug(childObjectsWithData);
+                
+                map<id,list<sObject>> templateObjects = new map<id,list<sObject>>();
+                map<id,list<sObject>> targetObjects = new map<id,list<sObject>>();
+                
+                templateObjects.put(templateId,new list<sObject>());
+                targetObjects.put(targetId,new list<sObject>());
+                
+                //loop over every fetched object. Add it the map of either template or target objects.
+                for(sObject thisRecord : childObjectsWithData)
+                {
+                    if(thisRecord.get(relationshipField) == templateId)
+                    {
+                        list<sObject> templateObjs = templateObjects.get(templateId);
+                        templateObjs.add(thisRecord);
+                        templateObjects.put(templateId,templateObjs);
+                    }
+                    else if(thisRecord.get(relationshipField) == targetId)
+                    {
+                        list<sObject> targetObjs = targetObjects.get(targetId);
+                        targetObjs.add(thisRecord);
+                        targetObjects.put(targetId,targetObjs);                    
+                    }
+                }  
+                
+                 system.debug('--------------------Maps built. Template contains ' +  templateObjects.size() + ' records. Target contains ' + targetObjects.size() + ' records');
+                
+
+                
+                set<string> skipUpdateFields = skipUpdatedFields.get(relationshipObjectName);
+                
+                //if there is no field to match on for this object, then there is no way to deduce matches, so we just abort. 
+                if(matchField != null)
+                {
+                    system.debug('-------------------- Attempting to perform match using field ' + relationshipObjectName + ' for ' + templateId + ' and ' + targetId);
+                    
+                    //iterate over every one of the templates records of this object type.
+                    for(sObject templateObject : templateObjects.get(templateId))
+                    {
+                        //it is possible that the targetId may be null (if this was invoked recursively) and then attempting to do a compare would error. So just as a 
+                        //easy fix we check to see if the targetId is not null and that the map is popualted with sObjects. If not we can assume that this is a newly created object
+                        //and therefor would not have related records, and hence should get them created now. If this returns the empty list the object compare will always find that the
+                        //list does not contain a matching object and then if the user has specified to create one, that will happen.
+                        list<sObject> objectsList = targetObjects.containsKey(targetId) && targetId != null ? targetObjects.get(targetId) : new list<sObject>();
+                        
+                        matchResult objCompare = containsMatchingSObject(templateObject,objectsList ,matchField);
+                        
+                        system.debug('\n\n\n------------ Attempt to find matching instance record for complete complete');
+                        system.debug(objCompare);
+                        
+                        //if no match was found for this template record, then we need to create one. Clone the record, change the parent the target and put it in the list
+                        //of records to create.
+                        if(!objCompare.matchFound && createMissingRecords)
+                        {
+                            system.debug('\n\n\n------------ No matching template found and create missing records is true. Cloning record and setting its parent to: ' + targetId);
+                            
+                            sObject clonedRecord = templateObject.clone(false,false,false,false);
+                            clonedRecord.put(relationshipField,targetId);
+                            objectsToCreate.add(clonedRecord);
+   
+                            nextBatchTemplateToTargetMap.put(templateObject.Id, null); 
+                            
+                        }
+                        //if a match was found, then we should check to see if updates are enabled. If they are we need to copy template values to target fields
+                        else if(updateExistingRecords)
+                        {
+                            //iterate over every field on this object type
+                            for(string fieldName : childObjectFields.keySet())
+                            {
+                                try
+                                {
+                                    if(skipUpdateFields != null && skipUpdateFields.contains(fieldName)) continue;
+                                    
+                                    //attempt to write the value from the template record to the matching target record
+                                    //only if the existing value is null, or the overwrite existing values flag is true.
+                                    if(objCompare.matchedObject.get(fieldName) == null || overwriteExistingValuesDuringUpdate)
+                                    {
+                                        objCompare.matchedObject.put(fieldName,templateObject.get(fieldName));
+                                    }
+                                        
+                                }
+                                catch(exception e)
+                                {
+                                    system.debug('\n\n\n\n----------- Error writting value: ' + templateObject.get(fieldName) + ' to field ' + fieldName);
+                                    system.debug(e.getMessage() + ' on line ' + e.getLineNumber());
+                                }
+                            }
+                            
+                            //add this record to the update list.
+                            objectsToUpdate.add(objCompare.matchedObject);
+                            
+                            //we will need to run another compare for this object and its related record next iteration.
+                            
+                            system.debug('\n\n\n\n------------------- Adding element to next batch to process!');
+                            system.debug(templateObject);
+                            
+                            nextBatchTemplateToTargetMap.put(templateObject.Id, objCompare.matchedObject.Id); 
+                        }
+                    }
+
+                    //Now do the search the other way to see if the target has records the template doesn't. If so then we need to possibly delete them.
+                    for(sObject targetObject: targetObjects.get(targetId))
+                    {
+                        matchResult objCompare = containsMatchingSObject(targetObject,templateObjects.get(templateId),matchField);
+                        
+                        //if no match was found for this template record, then we need to create one. Clone the record, change the parent the target and put it in the list
+                        //of records to create.
+                        if(!objCompare.matchFound && deleteUnmatchedTargetRecords)
+                        {
+                            objectsToDelete.add(targetObject.Id);
+                        }
+                        //if we are not deleting unmatched objects and this object type has unmatched record update fields defined, lets set them now. 
+                        else if(!objCompare.matchFound && unmatchedRecordFieldUpdates.containsKey(relationshipObjectName))
+                        {                            
+                            //iterate over every field defined as an unmatched record field to update
+                            for(string fieldName : unmatchedRecordFieldUpdates.get(relationshipObjectName).keySet())
+                            {
+                                try
+                                { 
+                                    //attempt to write the value defined in the map to the field on the object that does not match any template objects.
+                                    targetObject.put(fieldName,unmatchedRecordFieldUpdates.get(relationshipObjectName).get(fieldName));
+                                }
+                                catch(exception e)
+                                {
+                                    system.debug('\n\n\n\n----------- Error writting value: ' + unmatchedRecordFieldUpdates.get(relationshipObjectName).get(fieldName) + ' to field ' + fieldName);
+                                    system.debug(e.getMessage() + ' on line ' + e.getLineNumber());
+                                }
+                            }
+                            
+                            //add this record to the update list.
+                            objectsToUpdate.add(targetObject);                        
+                        }
+                    }                    
+                }
+            }    
+        }
+        if(updateExistingRecords)
+        {
+            system.debug('\n\n\n------------ Attempting To Perform Update On Records');
+            system.debug(objectsToUpdate);
+            
+            list<database.saveResult> updateResult = database.update(objectsToUpdate,allOrNothingUpdate);
+        }
+        if(createMissingRecords)
+        {
+            system.debug('\n\n\n------------ Attempting To Save/Insert Records');
+            system.debug(objectsToCreate);        
+            
+            //because the newly created objects were created from templates, those templates might still have more data they need
+            //to sync with these newly created records. So we wil query for them to get their sObject so we can use the getCloneSourceId() method. 
+            //with that we will have both the template and the target ids which we need to feed into the class.
+            list<database.saveResult> saveResult = database.insert(objectsToCreate,allOrNothingInsert);
+            
+            for(sObject newRecord : objectsToCreate)
+            {
+                if(newRecord.isClone() && newRecord.Id != null)
+                {
+                    nextBatchTemplateToTargetMap.put(newRecord.getCloneSourceId(),newRecord.Id);
+                }
+            }
+
+        }
+        
+        if(deleteUnmatchedTargetRecords)
+        {
+            system.debug('\n\n\n------------ Attempting Delete Records');
+            system.debug(objectsToDelete);           
+            list<database.deleteResult> delResult = database.delete(objectsToDelete);
+        }
+        
+        if(!nextBatchTemplateToTargetMap.isEmpty())
+        {
+            deepSyncBatched(this,nextBatchTemplateToTargetMap);
+        }
+    }
+
+    public matchResult containsMatchingSObject(sObject matchObject, list<sObject> findInList, string compareField)
+    {
+        matchResult thisResult = new matchResult();
+        //iterate over every one of the templates records of this object type.
+
+        //iterate over every one of the targets records of this record type.
+        for(sObject targetObject : findInList)
+        {
+            //if the field specified as the matching field is the same on both the template and target then we have a match. Record it and break the loop
+            if((string) matchObject.get(compareField) == (string) targetObject.get(compareField))
+            {
+                thisResult.matchFound = true;
+                thisResult.matchedObject = targetObject;
+                break;
+            }
+        }
+        
+        return thisResult;  
+    }
+    /**
+    * @description create a string which is a select statement for the given object type that will select all fields. Equivalent to Select * from objectName ins SQL
+    * @param objectName the API name of the object which to build a query string for
+    * @return string a string containing the SELECT keyword, all the fields on the specified object and the FROM clause to specify that object type. You may add your own where statements after.
+    **/
+    public string buildSelectAllStatment(string objectName){ return buildSelectAllStatment(objectName, new list<string>());}
+    public string buildSelectAllStatment(string objectName, list<string> extraFields)
+    {       
+        // Initialize setup variables
+        String query = 'SELECT ';
+        String objectFields = String.Join(new list<string>(globalDescribeMap.get(objectName).getDescribe().fields.getMap().keySet()),',');
+        if(extraFields != null)
+        {
+            objectFields += ','+String.Join(extraFields,',');
+        }
+        
+        objectFields = objectFields.removeEnd(',');
+        
+        query += objectFields;
+    
+        // Add FROM statement
+        query += ' FROM ' + objectName;
+                 
+        return query;   
+    }    
+    
+    public class matchResult
+    {
+        public boolean matchFound = false;
+        public sObject matchedObject {get;set;}
+    }   
+}

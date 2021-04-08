@@ -1,0 +1,102 @@
+    /**
+    * @Author: LiquidHub (Kevin Williams)
+    * @Date: Aug 11, 2017
+    * Get Quarter Number (1,2,3,4) from a date.  Use qtrOffset to look at prior or subsequent quarters
+    * @param refDate
+    * @param qtrOffset
+    * @return Integer
+    */
+    public static Integer getQuarterNumber(Date refDate, Integer qtrOffset) {
+
+        refDate = refDate.addMonths(qtrOffset * 3);
+        Decimal m = refDate.month();
+        Decimal d = m/3;
+        return Integer.valueOf(d.round(System.RoundingMode.CEILING));
+
+    }
+
+    /**
+    * @Author: LiquidHub (Kevin Williams)
+    * @Date: Aug 11, 2017
+    * Get calendar quarter start date from a date.  Use qtrOffset to look at prior or subsequent quarters
+    * @param refDate
+    * @param qtrOffset
+    * @return Date
+    */
+    public static Date getQuarterStartDate(Date refDate, Integer qtrOffset) {
+
+        System.debug('refDate = ' + refDate);
+
+        refDate = refDate.addMonths(qtrOffset * 3);
+        Decimal m = refDate.month();
+        Decimal d = m/3;
+        d = d.round(System.RoundingMode.CEILING);
+        Decimal s = (d - 1) * 3 + 1;
+        Integer y = refDate.year();
+        String qs = String.valueOf(s) + '/1/' + String.valueOf(y);
+
+        return Date.parse(qs);
+    }
+    /**
+    * @Author: LiquidHub (Kevin Williams)
+    * @Date: Aug 11, 2017
+    * Get calendar quarter end date from a date.  Use qtrOffset to look at prior or subsequent quarters
+    * @param refDate
+    * @param qtrOffset
+    * @return Date
+    */
+    public static Date getQuarterEndDate(Date refDate, Integer qtrOffset) {
+
+        refDate = refDate.addMonths(qtrOffset * 3);
+        Decimal m = refDate.month();
+        Decimal d = m/3;
+        d = d.round(System.RoundingMode.CEILING);
+        Decimal s = (d - 1) * 3 + 1;
+        Integer y = refDate.year();
+        String qs = String.valueOf(s) + '/1/' + String.valueOf(y);
+
+        return Date.parse(qs).addMonths(3).addDays(-1);
+
+    }
+    /**
+    * @Author: LiquidHub (Kevin Williams)
+    * @Date: Aug 11, 2017
+    * Formats a date range as text (e.g. Jul 1 - Sep 30 2017)
+    * @param startDate
+    * @param endDate
+    * @return String
+    */
+    public static String  getFormattedDateRange(Date startDate,Date endDate) {
+        System.debug('startDate = ' + startDate);
+        System.debug('startDate.month() = ' + startDate.month());
+        System.debug('monthMap = ' + monthMap.get(startDate.month()));
+
+        return monthMap.get(startDate.month()) + ' ' + startDate.day() + ' - ' + ((Datetime)endDate).format('MMM') + ' ' + endDate.day() + ' ' + endDate.year();
+
+    }
+    /**
+    * @Author: LiquidHub (Kevin Williams)
+    * @Date: Aug 11, 2017
+    * Formats a date range as text to show quarter start/end month and year (e.g. Jul - Sep 2017)
+    * @param startDate
+    * @param endDate
+    * @return String
+    */
+    public static String getFormattedQuarter(Date startDate, Date endDate) {
+
+        return monthMap.get(startDate.month()) + ' - ' + ((Datetime)endDate).format('MMM') + ' ' + endDate.year();
+
+    }
+	/**
+    * @Author: LiquidHub (Kevin Williams)
+    * @Date: Nov 13, 2017
+    * Formats a date range as text to show start quarter month/year and end quarter month/year (e.g. Jul 2017 - Sep 2017)
+    * @param startDate
+    * @param endDate
+    * @return String
+    */
+	public static String getFormattedQuarterMonthYear(Date startDate, Date endDate) {
+
+		return monthMap.get(startDate.month()) + ' ' + endDate.year() + ' - ' + ((Datetime)endDate).format('MMM') + ' ' + endDate.year();
+
+	}

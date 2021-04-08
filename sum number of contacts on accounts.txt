@@ -1,0 +1,59 @@
+    private list<Account> countNumberOfContacts(list<contact> contacts)
+    {
+        set<Id> accountIds = new set<Id>();
+        list<Account> updateAccounts = new list<Account>();
+        map<id,AggregateResult> aggResultsByAccountId = new map<id,AggregateResult>();
+        
+        //add all accounts that are going to need their counters updated to the set
+        for(contact thisContact : contacts)
+        {
+            accountIds.add(thisContact.accountid);
+        }
+
+        map<Id,Account> accounts = new map<Id,Account>( [select id, Count_of_Contacts_in_Relationship__c from account where id in :accountIds] );
+        
+        system.debug('\n\n\n----- All Accounts');
+        system.debug(accounts);
+        
+        //run the query to sum the data. There will only be rows where there 
+        AggregateResult[] numContacts = [select Count(Id)numContacts ,accountId                     
+                                         From Contact                                         
+                                         where accountId in :accountIds and accountId != null
+                                         group by ROLLUP (accountId)];
+
+        for(AggregateResult ar: numContacts)
+        {
+            aggResultsByAccountId.put((Id) ar.get('accountId'), ar);
+        }
+        //loop over the result set. One row per account with a totalAge and accountId column
+        system.debug('\n\n\n------ Aggregate results');
+        system.debug(numContacts);
+        
+        for(Account thisAccount : accounts.values())
+        {
+            double numContactsForThisAccount;
+            AggregateResult thisAr = aggResultsByAccountId.containsKey(thisAccount.Id) ? aggResultsByAccountId.get(thisAccount.Id) : null;
+            
+            system.debug('\n\n\n------ Found aggregate result');
+            system.debug(thisAr);
+            
+            if(thisAr == null) numContactsForThisAccount = 0;
+            else
+            {
+                numContactsForThisAccount = (double) thisAr.get('numContacts');
+            }
+            
+            system.debug('\n\n\n---- Number of contacts for this account is now: ' + numContactsForThisAccount);
+            if(thisAccount.Count_of_Contacts_in_Relationship__c == null || numContactsForThisAccount != thisAccount.Count_of_Contacts_in_Relationship__c)
+            {
+                thisAccount.Count_of_Contacts_in_Relationship__c = numContactsForThisAccount;
+                system.debug('Updating number of related contacts for account ' + thisAccount.Id + ' to ' + numContactsForThisAccount);
+                updateAccounts.add(thisAccount);
+            }
+        }
+
+        system.debug(updateAccounts);
+        
+        update updateAccounts;  
+        return updateAccounts;  
+    } 

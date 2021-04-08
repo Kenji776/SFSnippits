@@ -1,0 +1,32 @@
+                       
+            
+            //if we are querying 
+            if(searchObjects.size() == 1)
+            {
+                //describe the schema.sobjectType type we are searching for
+                Schema.SObjectType SObjectTypeObj = GlobalDescribeMap.get(searchObjects[0]);
+                
+                //get a describe of the sObject
+                Schema.DescribeSObjectResult DescribeSObjectResultObj = SObjectTypeObj.getDescribe();
+    
+                if(!DescribeSObjectResultObj.FieldSets.getMap().containsKey(config.fieldSet__c))
+                {
+                    throw new applicationException('Field set with name ' +config.fieldSet__c + ' could not be located for object: ' +searchObjects + ' please either create this fieldset or change the fieldset specified on the activityViewerConfig record for this object');
+                } 
+                        
+                Schema.FieldSet fieldSetObj = DescribeSObjectResultObj.FieldSets.getMap().get(config.fieldSet__c);
+                          
+                List<Schema.FieldSetMember> allFields = fieldSetObj.getFields(); 
+                
+                fields.clear();
+                
+                for(Schema.FieldSetMember thisField : allFields)
+                {
+                    fields.add(thisField.getFieldPath());
+                }
+                
+                if(fields.isEmpty())
+                {
+                    throw new applicationException('No fields were found in the fieldSet: ' + config.fieldSet__c + ' for object ' + searchObjects + ' please include some fields to display in the fieldset');
+                }
+            }

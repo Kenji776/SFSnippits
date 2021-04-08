@@ -1,0 +1,312 @@
+    public static boolean notificaitonRuleConditionMet(Notification_Rule_Condition__c rule,  sObject newObject, sObject oldObject)
+    {
+        system.debug('\n\n\n---------- Evaluating rule condition....');
+        system.debug(rule);
+        system.debug('\n\n\n---------- New Object Data....');
+        system.debug(newObject);
+        system.debug('\n\n\n---------- Old Object Data....');
+        system.debug(oldObject);
+        try
+        {
+            if(oldObject != null && oldObject.getSObjectType() != newObject.getSObjectType())
+            {
+                throw new DCP_ApplicationException('Only objects of the same type can be compared');
+            }
+            Map<String, Schema.SobjectField> objectDef = newObject.getSObjectType().getDescribe().getSObjectType().getDescribe().fields.getMap();
+            string objectName = newObject.getSObjectType().getDescribe().getLabel();
+            object sourceValue;
+            object targetValue;
+
+            Schema.DescribeFieldResult sourceFieldDescribe;
+            Schema.DescribeFieldResult targetFieldDescribe;
+
+            if(rule.Source_Value_Type__c == 'New Object' || rule.Source_Value_Type__c == 'Old Object')
+            {
+                if(!objectDef.containsKey(rule.Source_Value__c) && !rule.Source_Value__c.contains('{!')) throw new DCP_ApplicationException('No field with name ' + rule.Source_Value__c + ' found on object type ' + objectName);
+                else if(objectDef.containsKey(rule.Source_Value__c)) sourceFieldDescribe = objectDef.get(rule.Source_Value__c).getDescribe();
+            }
+
+
+            if(rule.Target_Value_Type__c == 'New Object' || rule.Target_Value_Type__c == 'Old Object')
+            {
+                if(!objectDef.containsKey(rule.Target_Value__c) && !rule.Target_Value__c.contains('{!')) throw new DCP_ApplicationException('No field with name ' + rule.Target_Value__c + ' found on object type ' + objectName);
+                else if(objectDef.containsKey(rule.Target_Value__c)) targetFieldDescribe = objectDef.get(rule.Target_Value__c).getDescribe();
+            }
+
+            system.debug('\n\n\n------------ Source Value Type: ' + rule.Target_Value_Type__c);
+            //get the source value
+            if(rule.Source_Value_Type__c == 'New Object')
+            {
+                sourceValue = newObject != null ? newObject.get(rule.Source_Value__c) : null;
+            }
+            else if(rule.Source_Value_Type__c == 'Old Object')
+            {
+                sourceValue = oldObject != null ? oldObject.get(rule.Source_Value__c) : null;
+            }
+            else if(rule.Source_Value_Type__c == 'Static Value')
+            {
+                if(sourceValue == 'null')
+                {
+                    sourceValue = null;
+                }
+                else
+                {
+                    sourceValue = evaluateKeyordString(rule.Source_Value__c, newObject);
+                }
+            }
+
+            system.debug('\n\n\n------------ Target Value Type: ' + rule.Target_Value_Type__c);
+            //get the target value
+            if(rule.Target_Value_Type__c == 'New Object')
+            {
+                targetValue = newObject != null ? newObject.get(rule.Target_Value__c) : null;
+            }
+            else if(rule.Target_Value_Type__c == 'Old Object')
+            {
+                targetValue = oldObject != null ? oldObject.get(rule.Target_Value__c) : null;
+            }
+            else if(rule.Target_Value_Type__c == 'Static Value')
+            {
+                if(targetValue == 'null')
+                {
+                    targetValue = null;
+                }
+                else
+                {
+                    targetValue = evaluateKeyordString(rule.Target_Value__c, newObject);
+                }
+            }
+
+            //deduce field types
+            string sourceFieldType = sourceFieldDescribe != null ? sourceFieldDescribe.getType().name() : 'STRING';
+            string targetFieldType = targetFieldDescribe != null ? targetFieldDescribe.getType().name() : 'STRING';
+
+            if(sourceFieldDescribe == null && targetFieldDescribe != null) sourceFieldType = targetFieldType;
+            else if(targetFieldDescribe == null && sourceFieldDescribe != null) targetFieldType = sourceFieldType;
+
+            system.debug('\n\n\n------ Source Field Has Type of: ' + sourceFieldType);
+            system.debug('\n\n\n------ Target Field Has Type of: ' + targetFieldType);
+
+            //if we are going to be dealing with dates, we need to do some additional logic to get them constructed
+
+            //if either the source or the target is a date field, then we can assume that both things being compared will be dates. So attempt to convert them
+            //as such.
+            if(sourceFieldType == 'Date' || targetFieldType == 'Date')
+            {
+                //because we don't know exactly what kind of date string we will be getting, try two different methods of constructing a date object from the source data.
+                boolean sourceIsDate = sourceValue instanceOf date;
+                boolean targetIsDate = targetValue instanceOf date;
+
+                if(!sourceIsDate)
+                {
+                    try
+                    {
+                        sourceValue = Date.valueOf((string) sourceValue);
+                    }
+                    catch(exception e)
+                    {
+                        sourceValue = Date.parse((string) sourceValue);
+                    }
+                }
+                if(!targetIsDate)
+                {
+                    try
+                    {
+                        targetValue = Date.valueOf((string) targetValue);
+                    }
+                    catch(exception e)
+                    {
+                        targetValue = Date.parse((string) targetValue);
+                    }
+                }
+                //from here on in we are going to treat these values as dates.
+                sourceFieldType = 'Date';
+                targetFieldType = 'Date';
+            }
+            //same sort of logic here. If either of the things being compared is a dateTime field, we can assume both items are date times and they should be converted.
+            else if(sourceFieldType == 'DateTime' || targetFieldType == 'DateTime')
+            {
+                boolean sourceIsDateTime = sourceValue instanceOf dateTime;
+                boolean targetIsDateTime = targetValue instanceOf dateTime;
+
+                if(!sourceIsDateTime)
+                {
+                    try
+                    {
+                        sourceValue = DateTime.valueOf((string) sourceValue);
+                    }
+                    catch(exception e)
+                    {
+                        sourceValue = DateTime.parse((string) sourceValue);
+                    }
+                }
+                if(!targetIsDateTime)
+                {
+                    try
+                    {
+                        targetValue = DateTime.valueOf((string) targetValue);
+                    }
+                    catch(exception e)
+                    {
+                        targetValue = DateTime.parse((string) targetValue);
+                    }
+                }
+
+                //from here on in we are going to treat these values as datetimes.
+                sourceFieldType = 'DateTime';
+                targetFieldType = 'DateTime';
+            }
+            if(sourceFieldType == 'Boolean' || targetFieldType == 'Boolean')
+            {
+                boolean sourceIsBool = sourceValue instanceOf Boolean;
+                boolean targetIsBool = targetValue instanceOf Boolean;
+
+                if(!sourceIsBool && sourceValue != null)
+                {
+                    sourceValue = Boolean.valueOf((string) sourceValue);
+                }
+                else if(sourceValue == null)
+                {
+                    sourceValue = false;
+                }
+                if(!targetIsBool && targetValue != null)
+                {
+
+                    targetValue = Boolean.valueOf((string) targetValue);
+                }
+                else if(targetValue == null)
+                {
+                    targetValue = false;
+                }
+            }
+
+            system.debug('\n\n\n-------- Comparing:' +sourceValue+ ' to ' +targetValue+ ' using comparison type: ' + rule.Comparison_Type__c);
+            //now we have both the values, now we just need to compare them in the way the rule specifies.
+            if(rule.Comparison_Type__c == 'equal')
+            {
+                if(sourceValue == targetValue)
+                {
+                    system.debug('\n\n\n----------- Comparison was true!. Rule matches!');
+                    return true;
+                }
+            }
+            else if(rule.Comparison_Type__c == 'notequal')
+            {
+                system.debug('\n\n\n----------- Comparing ' + sourceValue + ' not equal ' + targetValue);
+
+                if(sourceValue != targetValue)
+                {
+                    return true;
+                }
+            }
+            else if(rule.Comparison_Type__c == 'greaterthan' || rule.Comparison_Type__c == 'lessthan')
+            {
+                double sourceValConverted;
+                double compareValConverted;
+
+                //a null value can never be greater or less than another value. So a comparison against null is instantly a fail.
+                if(sourceValue == null) return false;
+
+                //try to convert the source value to a numeric so it can be compared.
+                if(sourceFieldType == 'Date')
+                {
+                    date sDate = (Date) sourceValue;
+                    sourceValConverted = Decimal.valueOf(sDate.year()+''+sDate.month()+''+sDate.day());
+                }
+                else if(sourceFieldType == 'DateTime')
+                {
+                    dateTime sDate = (DateTime) sourceValue;
+                    sourceValConverted = sDate.getTime();
+                }
+                else if(sourceFieldType == 'Currency' || sourceFieldType == 'Double' || sourceFieldType == 'Integer' || sourceFieldType == 'Percent')
+                {
+                    sourceValConverted = double.valueOf(sourceValue);
+                }
+                else if(sourceFieldType == null)
+                {
+                    sourceValConverted = double.valueOf(sourceValue);
+                }
+                else
+                {
+                    throw new DCP_ApplicationException('Impossible logical operation. Cannot convert field type ' + sourceFieldType + ' with value ' + sourceValue + ' To numeric for greater than comparison. Please review your notification rule: ' + rule.Id);
+                }
+
+                //try to convert the target value to numeric so it can be compared
+                if(targetFieldType == 'Date')
+                {
+                    date tDate = (Date) targetValue;
+                    compareValConverted = Decimal.valueOf(tDate.year()+''+tDate.month()+''+tDate.day());
+                }
+                else if(targetFieldType == 'DateTime')
+                {
+                    dateTime tDate = (Date) targetValue;
+                    compareValConverted = tDate.getTime();
+                }
+                else if(targetFieldType == 'Currency' || targetFieldType == 'Double' || targetFieldType == 'Integer' || targetFieldType == 'Percent')
+                {
+                    compareValConverted = double.valueOf(targetValue);
+                }
+                else if(targetFieldType == null)
+                {
+                    compareValConverted = double.valueOf(targetValue);
+                }
+                else
+                {
+                    throw new DCP_ApplicationException('Impossible logical operation. Cannot convert field type' + targetFieldType + ' with value ' + targetValue + ' To numeric for greater than comparison. Please review your notification rule: ' + rule.Id);
+                }
+
+
+                if(rule.Comparison_Type__c == 'greaterthan')
+                {
+                    if((double) sourceValConverted > (double) compareValConverted)
+                    {
+                        return true;
+                    }
+                }
+                else if(rule.Comparison_Type__c == 'lessthan')
+                {
+                    if((double) sourceValConverted < (double) compareValConverted)
+                    {
+                        return true;
+                    }
+                }
+            }
+            else if(rule.Comparison_Type__c == 'contains')
+            {
+                system.debug('Performing contains compare. Looking for ' + targetValue);
+
+                //a null value can never contain another value so thats an instant fail.
+                if(sourceValue == null) return false;
+
+                set<string> values = new set<string>(string.valueOf(targetValue).split(','));
+
+                system.debug('Values are: ' + values);
+
+                if(values.contains((string) sourceValue))
+                {
+                    system.debug('set contains: ' + sourceValue + ' returning true');
+                    return true;
+                }
+
+                system.debug('set did not contain value. returning false');
+            }
+            else if(rule.Comparison_Type__c == 'doesnotcontain')
+            {
+                //a null value can never contain another value so thats an instant pass
+                if(sourceValue == null) return true;
+
+                set<string> values = new set<string>(string.valueOf(targetValue).split(','));
+
+                if(!values.contains((string) sourceValue))
+                {
+                    return true;
+                }
+            }
+        }
+        catch(exception e)
+        {
+            handleError(e);
+        }
+        system.debug('\n\n\n----- Record did not pass rule: ' + rule.id);
+        return false;
+    }

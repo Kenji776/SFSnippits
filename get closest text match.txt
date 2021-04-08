@@ -1,0 +1,25 @@
+    /**
+    * @Author: LiquidHub (Daniel Llwellyn)
+    * @Date: Nov 13, 2017
+    * @description finds the closest match between the set of possibilities and the text to match. Useful for auto complete menus and fuzzy matching.
+    * @param set<string> possibilities, the set of all possible matches.
+    * @param string textToMatch the value to find the closest match for in the set of possibilities
+    * @return string, closest possible match
+    */
+
+    public static string getClosestMatch(set<string> possibilities, string textToMatch)
+    {
+        if(possibilities == null || textToMatch == null ) return '';
+        integer lowestDistance = 100;
+        string bestMatch = '';
+        for(string possible : possibilities)
+        {
+            integer distance = possible.getLevenshteinDistance(textToMatch);
+            if(distance < lowestDistance)
+            {
+                lowestDistance = distance;
+                bestMatch = possible;
+            }
+        }
+        return bestMatch;
+    }

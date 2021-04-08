@@ -1,0 +1,7 @@
+    public static string getNamespace()
+    {
+	//Replace manageFieldMappingsController with a class from your package
+        string np = [SELECT NamespacePrefix FROM ApexClass where Name = 'ManageFieldMappingsController' limit 1].NamespacePrefix;
+        string returnString = np != null ? np+'__' : '';
+        return returnString;
+    }

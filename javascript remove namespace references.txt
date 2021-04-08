@@ -1,0 +1,47 @@
+	/* Because the front end UI code expects the field names to not have namespaces, and this app doesn't have them in dev but does in packaging our code
+	   needs to be dynamic enough to feed the UI un-namespaced data regardless if the org is using one or not. This method will remove any references to a
+	   the given namespace that is used within an objects properties using a recursive call which will strip references. So for example if you pass in an
+	   array of sObjects each one with its fields as properties you can pass the list in here and the namespace will be removed from the field names so the UI
+	   doesn't have to worry about them. This may not be the best way to do this, but as of this writing there doesn't seem to be an elegant way to allow code
+	   to function both with and without namespaced when dealing with managed packages.
+	*/
+    modifysObjectArrayToRemoveNamespace : function(sObjectDataArray,component)
+    {
+
+        var namespace = 'envforce__';
+
+        for(var i = 0; i < sObjectDataArray.length; i++)
+        {
+            Object.keys(sObjectDataArray[i]).forEach(function(fieldName,index)
+            {
+
+            	var newName = fieldName.replace(namespace,'');
+
+	        	if(Array.isArray(sObjectDataArray[i][fieldName]))
+	        	{
+	        		//console.log('Found a sub property of data object that is an array, recursively processing.');
+	        		sObjectDataArray[i][fieldName] = component.helper.modifysObjectArrayToRemoveNamespace(sObjectDataArray[i][fieldName], component);
+	        		sObjectDataArray[i][newName] = sObjectDataArray[i][fieldName];
+	        	}
+	        	else if( typeof sObjectDataArray[i][fieldName] === "object")
+	        	{
+	        		//console.log('Found a sub property of data object that is an object, recursively processing');
+	        		sObjectDataArray[i][fieldName] = component.helper.modifysObjectArrayToRemoveNamespace([sObjectDataArray[i][fieldName]], component)[0];
+	        		sObjectDataArray[i][newName] = sObjectDataArray[i][fieldName];
+	        	}
+
+	        	else
+	        	{
+	                if(!sObjectDataArray[i].hasOwnProperty(newName))
+	                {
+	                	//console.log('Object doesnt have property with un-namespaced field property. Adding now');
+	                	sObjectDataArray[i][newName] = sObjectDataArray[i][fieldName];
+
+	            		delete sObjectDataArray[i][fieldName];
+	            	}
+            	}
+            });
+
+        }
+    	return sObjectDataArray;
+	},

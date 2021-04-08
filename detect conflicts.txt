@@ -1,0 +1,151 @@
+public class ScheduleConflictDetector
+{
+    /*
+    *@Description: Method for finding scheduling conflicts on events with their participants. Can be skipped by setting the Ignore_Conflicts__c boolean flag on the event obejct to true. 
+    *              Otherwise if any scheduling conflicts are found for any of the participants of the event, an error will be attached to the event sObject.
+    *@Param: list<event> events, the list of events to find scheduling conflicts for.
+    *@Return: none
+    */
+    public static void detectConflicts(list<Event> events)
+    {
+        Schedule_Conflict_Detector__c settings = Schedule_Conflict_Detector__c.getOrgDefaults();
+        
+        boolean considerPendingEventsConflicting = settings.Consider_Pending_Invites_Conflicting__c;
+        boolean considerOwnedEventsConflicting = settings.Consider_Owned_Events_Conflicting__c;
+        boolean considerAcceptedEventsConflicting = settings.Consider_Accepted_Invites_Conflicting__c;
+        boolean considerRelatedToEventsConflicting = settings.Consider_Related_To_Events_Conflicting__c;
+        string errorMessageTemplate = settings.Error_Message__c;
+        
+        //if we have the disable turing batch mode flag set to true, and this is a batch job, abort processing.
+        if(settings.Disable_During_Batch_Context__c && System.isBatch()) return;
+
+        map<id,list<UndecidedEventRelation>> eventToAttendeesMap = new map<id,list<UndecidedEventRelation>>();
+        map<id,event> eventMap = new map<id,event>();
+
+        //construct maps to hold the list of event attendees and the events themselves
+        for(event thisEvent : events)
+        {
+            if(!thisEvent.Ignore_Conflicts__c)
+            {
+                eventToAttendeesMap.put(thisEvent.id,new list<UndecidedEventRelation>());
+                eventMap.put(thisEvent.id,thisEvent);
+            }
+            
+        }
+        
+        //find all the attendees for all events passed in
+        list<UndecidedEventRelation> attendees = [SELECT Id, relationId, eventId FROM UndecidedEventRelation WHERE eventId in :eventToAttendeesMap.keySet()];
+                
+        //group the attendees into their events
+        for(UndecidedEventRelation attendee : attendees )
+        {
+            list<UndecidedEventRelation> thisEventsAttendees = eventToAttendeesMap.get(attendee.eventId);
+            thisEventsAttendees.add(attendee);
+            eventToAttendeesMap.put(attendee.eventId,thisEventsAttendees);
+        }
+
+
+                
+        //loop over every event, find any conflicts and report them
+        for(Id eventId : eventToAttendeesMap.keySet())
+        {
+            //get the source event object
+            Event thisEvent = eventMap.get(eventId);
+            set<id> attendeeIds = new set<id>();
+            
+            //create the set of ids of all the attendees
+            for(UndecidedEventRelation thisAttendee : eventToAttendeesMap.get(eventId))
+            {
+                attendeeIds.add(thisAttendee.relationId);
+            } 
+            
+
+            //There are four kinds of potential conflicts. One where the attendee is the ownerId for a given event, and another where they have accepted an invitation to another event happening at the 
+            //same time, or they have been invited to an event which occures at the same time, but have not responded to the invite, and finally where an attendee is the whoId of an event.
+            //We need three different queries for this, one to query events, and one to query acceptedEventRelations. Also I know it's not bulk safe to have queries inside of a loop, but honestly
+            //I don't think we are ever going to be mass importing events. It just gets too complicated to try and put this logic outside of the loop for now. Should come back and refactor later once
+            //this proof of concept is found to be working.
+            if(considerOwnedEventsConflicting )
+            {    
+                       
+                list<event> conflictingEvents = [SELECT Id, 
+                                                        StartDateTime, 
+                                                        EndDateTime, 
+                                                        Who.Name,
+                                                        Owner.Name 
+                                                 FROM Event 
+                                                 WHERE StartDateTime >= :thisEvent.StartDateTime and 
+                                                       EndDateTime <=:thisEvent.EndDateTime and 
+                                                       OwnerId in :attendeeIds];
+                
+                //if we found any conflicting events, add an error to the source event object.
+                for(event conflictEvent : conflictingEvents) 
+                {
+                    string err = errorMessageTemplate.replace('[eventId]',conflictEvent.Id).replace('[attendeeName]',conflictEvent.Owner.Name).replace('[startDate]',conflictEvent.StartDateTime.format()).replace('[endDate]',conflictEvent.EndDateTime.format());
+                    thisEvent.addError(err);
+                }
+            }
+            
+            if(considerRelatedToEventsConflicting)
+            {
+                list<event> conflictingEvents = [SELECT Id, 
+                                                        StartDateTime, 
+                                                        EndDateTime, 
+                                                        Who.Name,
+                                                        Owner.Name 
+                                                 FROM Event 
+                                                 WHERE StartDateTime >= :thisEvent.StartDateTime and 
+                                                       EndDateTime <=:thisEvent.EndDateTime and 
+                                                       WhoId in :attendeeIds];
+                
+                //if we found any conflicting events, add an error to the source event object.
+                for(event conflictEvent : conflictingEvents) 
+                {
+                    string err = errorMessageTemplate.replace('[eventId]',conflictEvent.Id).replace('[attendeeName]',conflictEvent.Owner.Name).replace('[startDate]',conflictEvent.StartDateTime.format()).replace('[endDate]',conflictEvent.EndDateTime.format());
+                    thisEvent.addError(err);
+                }            
+            }
+            
+            if(considerPendingEventsConflicting)
+            {
+                list<UndecidedEventRelation> conflictingUndecidedEvents = [SELECT Id, 
+                                                                                Event.StartDateTime, 
+                                                                                Event.EndDateTime, 
+                                                                                Relation.Name,
+                                                                                Event.Id
+                                                                         FROM UndecidedEventRelation
+                                                                         WHERE Event.StartDateTime >= :thisEvent.StartDateTime and 
+                                                                               Event.EndDateTime <=:thisEvent.EndDateTime and 
+                                                                               RelationId in :attendeeIds];
+                                                                               
+                //if we found any conflicting events, add an error to the source event object.
+                for(UndecidedEventRelation undecidedEvent : conflictingUndecidedEvents ) 
+                {
+                    string err = errorMessageTemplate.replace('[eventId]',undecidedEvent.Event.Id).replace('[attendeeName]',undecidedEvent.Relation.Name).replace('[startDate]',undecidedEvent.Event.StartDateTime.format()).replace('[endDate]',undecidedEvent.Event.EndDateTime.format());
+                    thisEvent.addError(err);                
+                }
+            }
+            if(considerAcceptedEventsConflicting)
+            {
+                //now find any conflicting accepted event invites.
+                list<AcceptedEventRelation> conflictingAcceptedEvents = [SELECT Id, 
+                                                                                Event.StartDateTime, 
+                                                                                Event.EndDateTime, 
+                                                                                Relation.Name,
+                                                                                Event.Id 
+                                                                         FROM AcceptedEventRelation
+                                                                         WHERE Event.StartDateTime >= :thisEvent.StartDateTime and 
+                                                                               Event.EndDateTime <=:thisEvent.EndDateTime and 
+                                                                               RelationId in :attendeeIds];
+                                                                               
+                //if we found any conflicting events, add an error to the source event object.
+                for(AcceptedEventRelation conflictEvent : conflictingAcceptedEvents ) 
+                {
+                    string err = errorMessageTemplate.replace('[eventId]',conflictEvent.Event.Id).replace('[attendeeName]',conflictEvent.Relation.Name).replace('[startDate]',conflictEvent.Event.StartDateTime.format()).replace('[endDate]',conflictEvent.Event.EndDateTime.format());
+                    thisEvent.addError(err);                  
+                }            
+            }
+        }
+        
+    }
+}
